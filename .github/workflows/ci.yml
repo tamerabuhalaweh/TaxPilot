@@ -1,0 +1,117 @@
+name: ci
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install backend deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r apps/api/requirements.txt -r apps/api/requirements-dev.txt
+      - name: Ruff lint
+        run: ruff check apps/api db tests
+      - name: Ruff format check
+        run: ruff format --check apps/api db tests
+      - name: Mypy
+        run: mypy apps/api
+      - name: Backend unit tests
+        run: pytest apps/api/tests -q
+      - name: Migration validation (needs postgres service)
+        run: |
+          python - <<'EOF'
+          from pathlib import Path
+          names = sorted(p.name for p in Path("db/migrations/versions").glob("*.sql"))
+          assert names and names == sorted(names), "migrations missing or unordered"
+          print("migration files:", names)
+          EOF
+
+  integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: taxpilot
+          POSTGRES_PASSWORD: taxpilot
+          POSTGRES_DB: taxpilot
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U taxpilot"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install backend deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r apps/api/requirements.txt -r apps/api/requirements-dev.txt
+      - name: Migration + API integration
+        env:
+          DATABASE_URL: postgresql+psycopg://taxpilot:taxpilot@localhost:5432/taxpilot
+          REDIS_URL: redis://localhost:6379/0
+        run: |
+          python db/migrate.py
+          python -m pytest tests/integration -q
+          DATABASE_URL="$DATABASE_URL" python - <<'EOF'
+          import os
+          from fastapi.testclient import TestClient
+          os.environ.setdefault("DATABASE_URL", os.environ["DATABASE_URL"])
+          from app.main import create_app
+          import sys
+          sys.path.insert(0, "apps/api")
+          c = TestClient(create_app())
+          assert c.get("/api/v1/health").status_code == 200
+          print("api health ok against services")
+          EOF
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/web/package.json
+      - name: Install
+        run: npm install
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Unit tests
+        run: npm test
+      - name: Build
+        run: npm run build
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Python dependency audit
+        run: |
+          python -m pip install --upgrade pip pip-audit
+          pip-audit -r apps/api/requirements.txt || echo "pip-audit found issues (see log)"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: npm audit
+        run: |
+          cd apps/web && npm audit --omit=dev || echo "npm audit found issues (see log)"

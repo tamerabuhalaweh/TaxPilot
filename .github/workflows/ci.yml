@@ -23,6 +23,8 @@ jobs:
       - name: Mypy
         run: mypy apps/api
       - name: Backend unit tests
+        env:
+          PYTHONPATH: apps/api
         run: pytest apps/api/tests -q
       - name: Migration validation (needs postgres service)
         run: |
@@ -65,16 +67,13 @@ jobs:
         env:
           DATABASE_URL: postgresql+psycopg://taxpilot:taxpilot@localhost:5432/taxpilot
           REDIS_URL: redis://localhost:6379/0
+          PYTHONPATH: apps/api
         run: |
           python db/migrate.py
           python -m pytest tests/integration -q
-          DATABASE_URL="$DATABASE_URL" python - <<'EOF'
-          import os
+          python - <<'EOF'
           from fastapi.testclient import TestClient
-          os.environ.setdefault("DATABASE_URL", os.environ["DATABASE_URL"])
           from app.main import create_app
-          import sys
-          sys.path.insert(0, "apps/api")
           c = TestClient(create_app())
           assert c.get("/api/v1/health").status_code == 200
           print("api health ok against services")

@@ -1,42 +1,133 @@
-"""Sprint 0 backend tests: health, error envelope, correlation IDs, queue semantics, redaction."""
+"""Sprint 0 backend tests: health/readiness, errors, correlation IDs, config guards,
+queue semantics, lifespan. No external services required (probes are stubbed)."""
 
+import re
+
+import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
+from app.config import Settings
 from app.errors import AppError
 from app.logging_setup import redact
 from app.main import create_app
-from worker.jobs import CANCELLED, FAILED, QUEUED, Job, MemoryBackend, process_one
+from app.middleware import coerce_correlation_id
+from worker.jobs import CANCELLED, FAILED, QUEUED, RUNNING, Job, MemoryBackend, process_one
 
-app = create_app()
-client = TestClient(app, raise_server_exceptions=False)
+SAFE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+
+
+def make_client(monkeypatch=None, db_up=True, queue_state="up"):  # type: ignore[no-untyped-def]
+    app = create_app()
+    if monkeypatch is not None:
+        monkeypatch.setattr("app.routers.health.probe_database", lambda _app: db_up)
+        monkeypatch.setattr("app.routers.health.probe_queue", lambda _app: queue_state)
+    return TestClient(app, raise_server_exceptions=False)
 
 
 def test_health_contract():
-    r = client.get("/api/v1/health")
+    client = make_client()
+    with client:
+        r = client.get("/api/v1/health")
     assert r.status_code == 200
     assert r.json() == {"status": "ok", "service": "taxpilot-api", "version": "0.1.0"}
     assert r.headers["X-Request-ID"]
 
 
-def test_ready_reports_flags_without_crashing():
-    r = client.get("/api/v1/ready")
+def test_ready_ok_when_dependencies_up(monkeypatch):  # type: ignore[no-untyped-def]
+    client = make_client(monkeypatch, db_up=True, queue_state="up")
+    with client:
+        r = client.get("/api/v1/ready")
     assert r.status_code == 200
     body = r.json()
-    assert set(body) == {"status", "database", "queue"}
+    assert body == {"status": "ready", "environment": "development", "database": "up", "queue": "up"}
 
 
-def test_correlation_id_roundtrip():
-    r = client.get("/api/v1/health", headers={"X-Request-ID": "test-123"})
-    assert r.headers["X-Request-ID"] == "test-123"
+def test_ready_503_when_database_down_and_leaks_nothing(monkeypatch):  # type: ignore[no-untyped-def]
+    client = make_client(monkeypatch, db_up=False, queue_state="up")
+    with client:
+        r = client.get("/api/v1/ready")
+    assert r.status_code == 503
+    body = r.json()
+    assert body["status"] == "degraded" and body["database"] == "down"
+    assert "taxpilot" not in r.text and "5432" not in r.text and "localhost" not in r.text
+
+
+def test_ready_503_when_queue_down(monkeypatch):  # type: ignore[no-untyped-def]
+    client = make_client(monkeypatch, db_up=True, queue_state="down")
+    with client:
+        r = client.get("/api/v1/ready")
+    assert r.status_code == 503
+    assert r.json()["queue"] == "down"
+
+
+def test_ready_accepts_explicit_memory_fallback_with_environment_flag(monkeypatch):  # type: ignore[no-untyped-def]
+    client = make_client(monkeypatch, db_up=True, queue_state="memory-fallback")
+    with client:
+        r = client.get("/api/v1/ready")
+    assert r.status_code == 200
+    assert r.json()["environment"] == "development"
+
+
+def test_correlation_id_validation():
+    assert coerce_correlation_id("abc-123_XY") == "abc-123_XY"
+    replaced = coerce_correlation_id("x" * 129)
+    assert replaced != "x" * 129 and SAFE.match(replaced)
+    assert SAFE.match(coerce_correlation_id(None))
+    assert coerce_correlation_id("a b") != "a b"  # spaces rejected, never echoed
+
+
+def test_correlation_roundtrip_and_replacement_in_app():
+    client = make_client()
+    with client:
+        ok = client.get("/api/v1/health", headers={"X-Request-ID": "test-123"})
+        assert ok.headers["X-Request-ID"] == "test-123"
+        evil = client.get("/api/v1/health", headers={"X-Request-ID": "<script>alert(1)</script>"})
+        assert evil.headers["X-Request-ID"] != "<script>alert(1)</script>"
+        assert SAFE.match(evil.headers["X-Request-ID"])
+
+
+def test_lifespan_sets_state_and_disposes():
+    app = create_app()
+    with TestClient(app):
+        assert app.state.settings is not None
+        assert hasattr(app.state, "engine")
+
+
+def test_production_config_rejects_dev_defaults():
+    with pytest.raises(ValidationError):
+        Settings(environment="production")
+    with pytest.raises(ValidationError):
+        Settings(environment="production", queue_backend="memory")
+    ok = Settings(
+        environment="production",
+        database_url="postgresql+psycopg://u:p@db:5432/t",
+        redis_url="redis://redis:6379/0",
+        cors_allowed_origins=["https://app.example.com"],
+    )
+    assert ok.environment == "production"
+
+
+def test_cors_allowlist_no_wildcard():
+    client = make_client()
+    with client:
+        r = client.get("/api/v1/health", headers={"Origin": "http://localhost:3000"})
+    assert r.headers.get("access-control-allow-origin") == "http://localhost:3000"
+    with client:
+        evil = client.get("/api/v1/health", headers={"Origin": "https://evil.example"})
+    assert "access-control-allow-origin" not in evil.headers
 
 
 def test_unhandled_errors_use_envelope_without_internals():
+    app = create_app()
+
     @app.get("/__boom")  # type: ignore[misc]
     def _boom():  # type: ignore[no-untyped-def]
         raise RuntimeError("secret internals must not leak")
 
     try:
-        r = client.get("/__boom")
+        with TestClient(app, raise_server_exceptions=False) as client:
+            r = client.get("/__boom")
         assert r.status_code == 500
         assert r.json()["error"]["code"] == "INTERNAL_ERROR"
         assert "secret internals" not in r.text
@@ -45,12 +136,15 @@ def test_unhandled_errors_use_envelope_without_internals():
 
 
 def test_app_error_codes_map_to_status():
+    app = create_app()
+
     @app.get("/__teapot")  # type: ignore[misc]
     def _teapot():  # type: ignore[no-untyped-def]
         raise AppError("TAX_CONTEXT_REQUIRED", "Confirm a tax context first.", {"x": 1})
 
     try:
-        r = client.get("/__teapot")
+        with TestClient(app, raise_server_exceptions=False) as client:
+            r = client.get("/__teapot")
         assert r.status_code == 409
         assert r.json()["error"]["code"] == "TAX_CONTEXT_REQUIRED"
     finally:
@@ -74,17 +168,32 @@ def test_queue_idempotent_enqueue_and_retry_then_fail():
 
     process_one(backend, fail)  # attempt 1 -> requeued
     assert backend.get(first.id).status == QUEUED
-    process_one(backend, fail)  # attempt 2 -> FAILED
+    process_one(backend, fail)  # attempt 2 -> FAILED with retained error
     done = backend.get(first.id)
     assert done.status == FAILED
-    assert done.error_class == "ValueError"
+    assert done.error_class == "ValueError" and "boom" in (done.error or "")
     assert done.attempts == 2
 
 
-def test_queue_success_path_and_cancel_state_exists():
-    assert CANCELLED == "CANCELLED" and FAILED == "FAILED" and QUEUED == "QUEUED"
+def test_queue_success_path():
     backend = MemoryBackend()
     backend.enqueue(Job(kind="noop"))
     out = process_one(backend, lambda j: None)
-    assert out and out.status == "SUCCEEDED"
+    assert out is not None and out.status == "SUCCEEDED"
     assert backend.depth() == 0
+
+
+def test_queue_recover_stale_requeues_crashed_claims():
+    backend = MemoryBackend()
+    job = backend.enqueue(Job(kind="echo"))
+    claimed = backend.claim()
+    assert claimed is not None and claimed.status == RUNNING
+    job.updated_at = 0.0  # simulate a claim from long ago (crashed worker)
+    assert backend.recover_stale(max_age_seconds=60.0) == 1
+    assert backend.get(job.id).status == QUEUED
+    out = process_one(backend, lambda j: None)
+    assert out is not None and out.status == "SUCCEEDED"
+
+
+def test_states_are_distinct_constants():
+    assert len({CANCELLED, FAILED, QUEUED}) == 3

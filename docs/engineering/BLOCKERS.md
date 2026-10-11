@@ -15,9 +15,10 @@ Independent foundation work proceeds; these restrict production readiness, not t
 | B-09 | Repository classification (public vs private/redacted) | What docs/fixtures may enter the repo | OPEN — asked of PO in PR #33 |
 | B-10 | SRS v1.1 (PR #15) + jurisdiction amendment (PR #32 + corrections PR #33) approval | JUR schema/API coding, then domain slices | OPEN — foundation only until approved |
 
-## Security notes (Sprint 0, 2026-10-09)
+## Security notes (Sprint 0, 2026-10-09; corrections round)
 - Backend: `pip-audit` initially found 14 advisories in transitive `starlette 0.41.3` (via `fastapi 0.115.6`); upgraded to `fastapi==0.143.0` (starlette 1.7.0) — re-audit clean, full suite re-green. Pinned in `apps/api/requirements.txt`.
-- Frontend: `npm audit` reports 2 postcss advisories (high+critical) reachable only via build-time CSS processing; fix requires breaking `next@16`. Stayed on latest `next@14.2.35` (React 18.3.1). Accepted risk for Sprint 0: no attacker-controlled CSS exists anywhere in the product pipeline (all styles authored); CI `security` job reports it on every PR; revisit (upgrade or override) before any production deployment.
+- Frontend: `npm audit` showed the Next 14 line itself carrying 20+ advisories (critical aggregate; GHSA-9g9p-9gw9-jx7f, GHSA-h25m-26qc-wcjf, GHSA-p293-qw3h-jr36 RCE on Windows hosts, GHSA-p9j2-gv94-2wf4 SSRF in rewrites, plus postcss GHSA-qx2v-qp2m-jg93 / GHSA-6g55-p6wh-862q / GHSA-fxqj-rqcc-2cmp). Fix required semver-major `next@16.4.0`; migration evaluated on our minimal surface and adopted (React 19.3.0; typecheck/tests/build/dev/e2e re-verified). Prod `npm audit`: **0 vulnerabilities**. No exception filed.
+- CI security job now fails on non-exempt findings (pip: any; npm: high/critical) via `.github/scripts/security_gate.py` + `.github/security-exceptions.json` (currently empty). Gate negative-control verified (synthetic critical → exit 1). `npm ci` everywhere (CI + Dockerfile share the committed lockfile graph).
 - No secrets committed (`.env.example` only; `.env`/`.venv`/`node_modules` ignored).
 
 Synthetic fixtures are for engineering tests only. Real import support needs authorized representative exports; no parser-accuracy claims from synthetic data alone.

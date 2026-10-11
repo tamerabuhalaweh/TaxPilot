@@ -1,7 +1,8 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true
-  // API base is runtime-configured in the browser via NEXT_PUBLIC_API_BASE.
+  // API proxying is handled at request time by app/api/v1/[...path]/route.ts
+  // (runtime API_INTERNAL_URL), not by build-time rewrites.
 };
 
 export default nextConfig;

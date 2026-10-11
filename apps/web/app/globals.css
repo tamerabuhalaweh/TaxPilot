@@ -39,6 +39,15 @@ button.tp-primary {
   font-size: 15px;
   cursor: pointer;
 }
+a.tp-primary {
+  display: inline-block;
+  background: var(--tp-accent);
+  color: #fff;
+  border-radius: var(--tp-radius);
+  padding: 10px 18px;
+  font-size: 15px;
+  text-decoration: none;
+}
 button.tp-primary:disabled { opacity: 0.55; cursor: not-allowed; }
 .tp-pill {
   display: inline-block;

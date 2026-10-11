@@ -6,8 +6,12 @@ from sqlalchemy.orm import sessionmaker
 from .config import Settings
 
 
-def create_db_engine(settings: Settings):
-    return create_engine(settings.database_url, pool_pre_ping=True)
+def create_db_engine(settings: Settings, connect_timeout: float = 5.0):
+    return create_engine(
+        settings.database_url,
+        pool_pre_ping=True,
+        connect_args={"connect_timeout": connect_timeout},
+    )
 
 
 def session_factory(engine):  # type: ignore[no-untyped-def]

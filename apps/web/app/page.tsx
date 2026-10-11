@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import { Alert } from "../components/Alert";
 import { Button } from "../components/Button";
@@ -47,7 +48,9 @@ export default function DashboardPage() {
         <EmptyState title={t(locale, "dashboard.newReview")} hint={t(locale, "dashboard.empty")} />
       </div>
       <div className="tp-actions">
-        <Button>{t(locale, "dashboard.newReview")}</Button>
+        <Link href="/reviews/new" className="tp-primary">
+          {t(locale, "dashboard.newReview")}
+        </Link>
       </div>
     </main>
   );

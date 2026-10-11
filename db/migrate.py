@@ -1,9 +1,11 @@
 """Versioned SQL migration runner (stdlib + psycopg only).
 
-- Applies `db/migrations/versions/*.sql` in lexicographic order inside one transaction each.
+- Applies `db/migrations/versions/*.sql` in lexicographic order, one transaction each.
 - Records applied versions in schema_migrations; re-runs are no-ops (idempotent).
-- Usage: `python db/migrate.py --database-url postgresql+psycopg://...` (psycopg scheme
-  is translated to libpq `dbname=` form) or set DATABASE_URL.
+- Rejects badly named files, duplicate version identifiers, and records nothing for
+  failed migrations (the failed statement rolls back; the version stays unapplied).
+- Connection failures propagate to the caller (loud, never swallowed).
+- Usage: `python db/migrate.py --database-url postgresql+psycopg://...` or DATABASE_URL.
 """
 
 import argparse
@@ -20,28 +22,43 @@ def _to_libpq(url: str) -> str:
     return url
 
 
-def pending_versions(applied: set[str]) -> list[Path]:
-    files = sorted(VERSIONS.glob("*.sql"))
-    return [f for f in files if f.stem.split("_")[0] not in applied]
+def discover(versions_dir: Path = VERSIONS) -> list[Path]:
+    """Return migration files in apply order; reject bad names and duplicate versions."""
+    files = sorted(versions_dir.glob("*.sql"), key=lambda p: p.name)
+    seen: dict[str, str] = {}
+    for path in files:
+        match = re.fullmatch(r"(\d{4})_.+\.sql", path.name)
+        if not match:
+            raise ValueError(f"bad migration name (want NNNN_name.sql): {path.name}")
+        version = match.group(1)
+        if version in seen:
+            raise ValueError(
+                f"duplicate migration version {version}: {seen[version]} and {path.name}"
+            )
+        seen[version] = path.name
+    return files
 
 
-def migrate(database_url: str) -> list[str]:
+def migrate(
+    database_url: str, versions_dir: Path = VERSIONS, connect_timeout: int = 10
+) -> list[str]:
     import psycopg
 
+    files = discover(versions_dir)
     applied: list[str] = []
-    with psycopg.connect(_to_libpq(database_url)) as conn:
+    with psycopg.connect(
+        _to_libpq(database_url), connect_timeout=connect_timeout
+    ) as conn:
         conn.execute(
             "CREATE TABLE IF NOT EXISTS schema_migrations "
             "(version TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())"
         )
-        rows = conn.execute("SELECT version FROM schema_migrations").fetchall()
-        done = {r[0] for r in rows}
-        for path in sorted(VERSIONS.glob("*.sql")):
+        done = {
+            r[0]
+            for r in conn.execute("SELECT version FROM schema_migrations").fetchall()
+        }
+        for path in files:
             version = path.stem.split("_")[0]
-            if not re.fullmatch(r"\d{4}", version):
-                raise ValueError(
-                    f"bad migration name (want NNNN_name.sql): {path.name}"
-                )
             if version in done:
                 continue
             sql = path.read_text(encoding="utf-8")

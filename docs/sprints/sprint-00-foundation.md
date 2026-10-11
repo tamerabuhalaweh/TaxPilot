@@ -22,7 +22,11 @@ Branch: `feature/sprint-00-foundation`. Scope: reproducible dev foundation only.
 - `packages/contracts|shared`, `workers/ingestion|reconciliation|reports`, `rules/jordan`, `infrastructure/`, `tests/e2e`: no purpose yet without domain contracts (Sprint 1+). Worker logic lives in `apps/api/worker` until the approved queue topology exists.
 - Alembic: the `migrate.py` runner is the migration framework (reviewable, dependency-free, tested).
 - Deployment: CI builds + validates; no prod deploy target yet (no hosting decision — blocker).
-- postcss pair: remediated via the Next 16 upgrade (no exception needed).
+## Review corrections, round 2 (RQ-1 leases + RQ-2 honesty + #36 triage)
+- Queue: every claim carries a fencing token + lease deadline; finish/requeue/recover are atomic CAS against (RUNNING, owner) via Lua — a stale worker's late completion is rejected and logged, never overwrites. Heartbeat thread renews live claims; `serve()` runs bounded automatic recovery (configurable interval) with logged counters — no operator call, no fleet restart. Production worker start refused without `JOBS_DURABILITY_APPROVED` (gate for OPS-JOBS-01 #35).
+- Durability honesty: `RedisBackend.durable` reverted to False; module docstring states worker-crash-only survival. Compose Redis is single-node default persistence — documented in compose + here, unmistakable for prod.
+- Security: gate fails closed on unknown/missing severity, advisory-less findings, malformed audits, and unsigned/expired exceptions (8 gate unit tests incl. negative controls); CI audit steps use `|| true` + gate so scanner crashes fail closed while excepted findings pass through the gate; vitest 2.1.5→2.1.9 (remaining dev-only tinypool/vite advisories need breaking vitest 5 — recorded as pre-production gate, dev-only, excluded from runtime image via `npm ci --omit=dev`; runtime image verified serving 200 with dev tooling absent — transitive `playwright` npm package ships via next itself, 0 advisories, no browsers).
+- BFF proxy + migration locking: preserved as explicit pre-auth/upload and pre-parallel-work gates (#36) — not exploitable in Sprint 0 (no auth/uploads, single engineer, one migration); recorded, not silently deferred.
 
 ## Run it
 See README “Local development”. Test evidence for this PR is recorded in Task 3 outputs (no fabricated results).

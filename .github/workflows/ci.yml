@@ -158,18 +158,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Python dependency audit (fails on non-exempt findings)
+      - name: Python dependency audit (gate decides; scanner failure fails closed)
         run: |
           python -m pip install --upgrade pip pip-audit
-          pip-audit -r apps/api/requirements.txt --format=json --output /tmp/pip-audit.json
+          pip-audit -r apps/api/requirements.txt --format=json --output /tmp/pip-audit.json || true
           python .github/scripts/security_gate.py --ecosystem pip \
             --audit /tmp/pip-audit.json --exceptions .github/security-exceptions.json
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - name: npm audit (fails on non-exempt high/critical)
+      - name: npm audit (gate decides; scanner failure fails closed)
         run: |
           cd apps/web && npm ci
-          npm audit --omit=dev --json > /tmp/npm-audit.json
+          npm audit --omit=dev --json > /tmp/npm-audit.json || true
           python ../../.github/scripts/security_gate.py --ecosystem npm \
             --audit /tmp/npm-audit.json --exceptions ../../.github/security-exceptions.json

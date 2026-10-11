@@ -12,7 +12,18 @@ from app.errors import AppError
 from app.logging_setup import redact
 from app.main import create_app
 from app.middleware import coerce_correlation_id
-from worker.jobs import CANCELLED, FAILED, QUEUED, RUNNING, Job, MemoryBackend, process_one
+from worker.jobs import (
+    CANCELLED,
+    FAILED,
+    OUT_COMPLETED,
+    OUT_FAILED,
+    OUT_RETRIED,
+    QUEUED,
+    RUNNING,
+    Job,
+    MemoryBackend,
+    process_one,
+)
 
 SAFE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
@@ -166,9 +177,11 @@ def test_queue_idempotent_enqueue_and_retry_then_fail():
     def fail(job):  # type: ignore[no-untyped-def]
         raise ValueError("boom")
 
-    process_one(backend, fail)  # attempt 1 -> requeued
+    _job, first_out = process_one(backend, fail, "w-1", 60.0)  # attempt 1 -> requeued
+    assert first_out == OUT_RETRIED
     assert backend.get(first.id).status == QUEUED
-    process_one(backend, fail)  # attempt 2 -> FAILED with retained error
+    _job, second_out = process_one(backend, fail, "w-1", 60.0)  # attempt 2 -> FAILED
+    assert second_out == OUT_FAILED
     done = backend.get(first.id)
     assert done.status == FAILED
     assert done.error_class == "ValueError" and "boom" in (done.error or "")
@@ -178,22 +191,122 @@ def test_queue_idempotent_enqueue_and_retry_then_fail():
 def test_queue_success_path():
     backend = MemoryBackend()
     backend.enqueue(Job(kind="noop"))
-    out = process_one(backend, lambda j: None)
+    out, outcome = process_one(backend, lambda j: None, "w-1", 60.0)
+    assert outcome == OUT_COMPLETED
     assert out is not None and out.status == "SUCCEEDED"
     assert backend.depth() == 0
+
+
+def test_queue_claim_sets_owner_lease_and_attempt():
+    backend = MemoryBackend()
+    backend.enqueue(Job(kind="echo"))
+    claimed = backend.claim("w-a", 60.0)
+    assert claimed is not None and claimed.status == RUNNING
+    assert claimed.owner == "w-a" and claimed.lease_expires_at > claimed.created_at
+    assert claimed.attempts == 1
+
+
+def test_queue_renew_keeps_live_worker_and_rejects_stranger():
+    backend = MemoryBackend()
+    backend.enqueue(Job(kind="echo"))
+    claimed = backend.claim("w-a", 60.0)
+    assert claimed is not None
+    assert backend.renew(claimed, "w-a", 60.0) is True
+    assert backend.renew(claimed, "w-b", 60.0) is False
+
+
+def test_queue_stale_finish_is_rejected_without_overwrite():
+    backend = MemoryBackend()
+    job = backend.enqueue(Job(kind="echo"))
+    first = backend.claim("w-old", 60.0)
+    assert first is not None
+    # Simulate lease loss + legitimate reclaim: force-expire then requeue+reclaim.
+    first.lease_expires_at = 0.0
+    assert backend.recover_stale() == 1
+    second = backend.claim("w-new", 60.0)
+    assert second is not None and second.owner == "w-new" and second.attempts == 2
+    assert backend.finish(first, "w-old", True) is False  # stale attempt touches nothing
+    current = backend.get(job.id)
+    assert current.status == RUNNING and current.owner == "w-new"
+    assert backend.finish(second, "w-new", True) is True
+    assert backend.get(job.id).status == "SUCCEEDED"
 
 
 def test_queue_recover_stale_requeues_crashed_claims():
     backend = MemoryBackend()
     job = backend.enqueue(Job(kind="echo"))
-    claimed = backend.claim()
+    claimed = backend.claim("w-a", 60.0)
     assert claimed is not None and claimed.status == RUNNING
-    job.updated_at = 0.0  # simulate a claim from long ago (crashed worker)
-    assert backend.recover_stale(max_age_seconds=60.0) == 1
+    job.lease_expires_at = 0.0  # simulate a claim from long ago (crashed worker)
+    assert backend.recover_stale() == 1
     assert backend.get(job.id).status == QUEUED
-    out = process_one(backend, lambda j: None)
+    out, outcome = process_one(backend, lambda j: None, "w-b", 60.0)
+    assert outcome == OUT_COMPLETED
     assert out is not None and out.status == "SUCCEEDED"
 
 
 def test_states_are_distinct_constants():
     assert len({CANCELLED, FAILED, QUEUED}) == 3
+
+
+def test_production_worker_use_blocked_until_durability_approved(monkeypatch):  # type: ignore[no-untyped-def]
+    from worker.runner import recover_and_serve
+
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://u:p@db:5432/t")
+    monkeypatch.setenv("REDIS_URL", "redis://redis:6379/0")
+    monkeypatch.delenv("JOBS_DURABILITY_APPROVED", raising=False)
+    with pytest.raises(RuntimeError, match="OPS-JOBS-01"):
+        recover_and_serve()
+    # Explicit approval lifts the block at settings level (the loop itself is not started here).
+    approved = Settings(
+        environment="production",
+        database_url="postgresql+psycopg://u:p@db:5432/t",
+        redis_url="redis://redis:6379/0",
+        cors_allowed_origins=["https://app.example.com"],
+        jobs_durability_approved=True,
+    )
+    assert approved.jobs_durability_approved is True
+
+
+def test_serve_recovers_automatically_without_operator():
+    from worker.runner import serve
+
+    backend = MemoryBackend()
+    job = backend.enqueue(Job(kind="echo"))
+    claimed = backend.claim("crashed-worker", 0.2)  # dies holding the claim, no heartbeat
+    assert claimed is not None
+    stats = serve(
+        backend,
+        lambda j: None,
+        worker_id="w-b",
+        lease_ttl=5.0,
+        recover_interval=0.1,
+        stop_after_jobs=1,
+        idle_timeout=10.0,
+    )
+    assert stats["completed"] == 1 and stats["recovered"] >= 1
+    final = backend.get(job.id)
+    assert final.status == "SUCCEEDED" and final.attempts == 2
+
+
+def test_heartbeat_prevents_recovery_of_live_worker():
+    import threading
+    import time as _time
+
+    from worker.runner import _heartbeat
+
+    backend = MemoryBackend()
+    job = backend.enqueue(Job(kind="echo"))
+    claimed = backend.claim("w-live", 0.6)
+    assert claimed is not None
+    stop = threading.Event()
+    beat = threading.Thread(target=_heartbeat, args=(backend, job.id, "w-live", 0.6, stop), daemon=True)
+    beat.start()
+    _time.sleep(1.5)  # well past the original lease, while heartbeats renew
+    try:
+        assert backend.recover_stale() == 0
+        assert backend.get(job.id).owner == "w-live"
+    finally:
+        stop.set()
+        beat.join(timeout=5.0)

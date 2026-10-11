@@ -1,4 +1,8 @@
-# Sprint 0 local stack. Dev-only defaults; production config is separate and never committed.
+# Sprint 0 queue runs on a single Redis node with DEFAULT persistence (RDB snapshots
+# only). This survives worker crashes while Redis is up; it does NOT survive a Redis
+# crash/restart. Production use is blocked until OPS-JOBS-01 (#35) closes — see
+# docs/engineering/BLOCKERS.md B-05/B-10 and worker/jobs.py. Do not mistake this
+# compose file for a production topology.
 services:
   postgres:
     image: postgres:16

@@ -24,6 +24,11 @@ class Settings(BaseSettings):
     queue_default_max_attempts: int = 5
     probe_timeout_seconds: float = 2.0
 
+    # Worker reliability (Sprint 0 foundation; production durability pending OPS-JOBS-01 #35)
+    worker_lease_ttl_seconds: float = 60.0
+    worker_recover_interval_seconds: float = 30.0
+    jobs_durability_approved: bool = False
+
     @model_validator(mode="after")
     def _guard_production(self) -> "Settings":
         if self.environment == "production":

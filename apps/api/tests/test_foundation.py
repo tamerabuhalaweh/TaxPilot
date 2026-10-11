@@ -202,8 +202,19 @@ def test_queue_claim_sets_owner_lease_and_attempt():
     backend.enqueue(Job(kind="echo"))
     claimed = backend.claim("w-a", 60.0)
     assert claimed is not None and claimed.status == RUNNING
-    assert claimed.owner == "w-a" and claimed.lease_expires_at > claimed.created_at
+    assert claimed.owner.startswith("w-a:") and len(claimed.owner) > len("w-a:")
+    assert claimed.lease_expires_at > claimed.created_at
     assert claimed.attempts == 1
+
+
+def test_queue_claim_mints_unique_tokens_per_attempt():
+    backend = MemoryBackend()
+    backend.enqueue(Job(kind="echo"))
+    backend.enqueue(Job(kind="echo"))
+    first = backend.claim("w-a", 60.0)
+    second = backend.claim("w-a", 60.0)
+    assert first is not None and second is not None
+    assert first.owner != second.owner  # same worker, distinct fencing tokens
 
 
 def test_queue_renew_keeps_live_worker_and_rejects_stranger():
@@ -211,8 +222,17 @@ def test_queue_renew_keeps_live_worker_and_rejects_stranger():
     backend.enqueue(Job(kind="echo"))
     claimed = backend.claim("w-a", 60.0)
     assert claimed is not None
-    assert backend.renew(claimed, "w-a", 60.0) is True
-    assert backend.renew(claimed, "w-b", 60.0) is False
+    assert backend.renew(claimed, claimed.owner, 60.0) is True
+    assert backend.renew(claimed, "w-b:00000000", 60.0) is False
+
+
+def test_queue_renew_refuses_expired_lease_even_for_owner():
+    backend = MemoryBackend()
+    backend.enqueue(Job(kind="echo"))
+    claimed = backend.claim("w-a", 60.0)
+    assert claimed is not None
+    claimed.lease_expires_at = 0.0  # lease lapsed; heartbeat must not resurrect it
+    assert backend.renew(claimed, claimed.owner, 60.0) is False
 
 
 def test_queue_stale_finish_is_rejected_without_overwrite():
@@ -220,16 +240,35 @@ def test_queue_stale_finish_is_rejected_without_overwrite():
     job = backend.enqueue(Job(kind="echo"))
     first = backend.claim("w-old", 60.0)
     assert first is not None
+    old_token = first.owner
     # Simulate lease loss + legitimate reclaim: force-expire then requeue+reclaim.
     first.lease_expires_at = 0.0
     assert backend.recover_stale() == 1
     second = backend.claim("w-new", 60.0)
-    assert second is not None and second.owner == "w-new" and second.attempts == 2
-    assert backend.finish(first, "w-old", True) is False  # stale attempt touches nothing
+    assert second is not None and second.owner.startswith("w-new:")
+    assert second.owner != old_token and second.attempts == 2
+    assert backend.finish(first, old_token, True) is False  # stale attempt touches nothing
     current = backend.get(job.id)
-    assert current.status == RUNNING and current.owner == "w-new"
-    assert backend.finish(second, "w-new", True) is True
+    assert current.status == RUNNING and current.owner == second.owner
+    assert backend.finish(second, second.owner, True) is True
     assert backend.get(job.id).status == "SUCCEEDED"
+
+
+def test_queue_recovery_honors_max_attempts():
+    backend = MemoryBackend()
+    job = backend.enqueue(Job(kind="echo", max_attempts=2))
+    first = backend.claim("w-1", 60.0)
+    assert first is not None
+    first.lease_expires_at = 0.0  # crash 1
+    assert backend.recover_stale() == 1  # attempts 1 < 2 -> requeued
+    second = backend.claim("w-2", 60.0)
+    assert second is not None and second.attempts == 2
+    second.lease_expires_at = 0.0  # crash 2
+    assert backend.recover_stale() == 1  # attempts 2 >= 2 -> terminal, not requeued
+    final = backend.get(job.id)
+    assert final.status == "FAILED" and final.error_class == "MaxAttemptsExhausted"
+    assert "attempts exhausted" in (final.error or "")
+    assert backend.depth() == 0  # nothing requeued
 
 
 def test_queue_recover_stale_requeues_crashed_claims():
@@ -297,16 +336,17 @@ def test_heartbeat_prevents_recovery_of_live_worker():
     from worker.runner import _heartbeat
 
     backend = MemoryBackend()
-    job = backend.enqueue(Job(kind="echo"))
+    backend.enqueue(Job(kind="echo"))
     claimed = backend.claim("w-live", 0.6)
     assert claimed is not None
+    token = claimed.owner
     stop = threading.Event()
-    beat = threading.Thread(target=_heartbeat, args=(backend, job.id, "w-live", 0.6, stop), daemon=True)
+    beat = threading.Thread(target=_heartbeat, args=(backend, claimed.id, token, 0.6, stop), daemon=True)
     beat.start()
     _time.sleep(1.5)  # well past the original lease, while heartbeats renew
     try:
         assert backend.recover_stale() == 0
-        assert backend.get(job.id).owner == "w-live"
+        assert backend.get(claimed.id).owner == token
     finally:
         stop.set()
         beat.join(timeout=5.0)

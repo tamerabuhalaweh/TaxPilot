@@ -245,9 +245,9 @@ def test_long_running_worker_with_heartbeat_is_not_stolen():
                 "from worker.runner import _heartbeat; "
                 "import threading; "
                 "b = RedisBackend({redis_url!r}); "
-                "j = b.claim('worker-live', 2); print('CLAIMED', j.id, flush=True); "
+                "j = b.claim('worker-live', 2); print('CLAIMED', j.id, j.owner, flush=True); "
                 "stop = threading.Event(); "
-                "t = threading.Thread(target=_heartbeat, args=(b, j.id, 'worker-live', 2, stop)); "
+                "t = threading.Thread(target=_heartbeat, args=(b, j.id, j.owner, 2, stop)); "
                 "t.start(); time.sleep(8); stop.set(); t.join(); print('ALIVE-DONE', flush=True)"
             ).format(api_dir=API_DIR, redis_url=TEST_REDIS_URL),
         ],
@@ -257,10 +257,12 @@ def test_long_running_worker_with_heartbeat_is_not_stolen():
     )
     try:
         line = holder.stdout.readline() if holder.stdout else ""
-        assert f"CLAIMED {produced['id']}" in line
+        assert f"CLAIMED {produced['id']} worker-live:" in line
         time.sleep(5)  # past several lease windows; heartbeats must defend the claim
         mid = _status(produced["id"])
-        assert mid["status"] == "RUNNING" and mid["owner"] == "worker-live", mid
+        assert mid["status"] == "RUNNING" and mid["owner"].startswith(
+            "worker-live:"
+        ), mid
         holder.wait(timeout=30)
     finally:
         if holder.poll() is None:
@@ -271,7 +273,7 @@ def test_long_running_worker_with_heartbeat_is_not_stolen():
         "import sys; sys.path.insert(0, {api_dir!r}); "
         "from worker.jobs import RedisBackend; "
         "b = RedisBackend({redis_url!r}); "
-        "j = b.get({job_id!r}); print(b.finish(j, 'worker-live', True))",
+        "j = b.get({job_id!r}); print(b.finish(j, j.owner, True))",
         job_id=produced["id"],
     )
     assert settled.returncode == 0, settled.stderr[-2000:]
@@ -326,23 +328,164 @@ def test_stale_finish_cannot_overwrite_newer_attempt():
         "import sys, time; sys.path.insert(0, {api_dir!r}); "
         "from worker.jobs import RedisBackend; "
         "b = RedisBackend({redis_url!r}); "
-        "old = b.claim('w-old', 0.5); "
+        "old = b.claim('w-old', 0.5); print('OLD-OWNER:', old.owner); "
         "time.sleep(1.0); "
         "rec = b.recover_stale(); print('REC:', rec); "
-        "new = b.claim('w-new', 30); print('SAME:', new.id == old.id); "
-        "late = b.finish(old, 'w-old', True); "
+        "new = b.claim('w-new', 30); print('SAME:', new.id == old.id); print('NEW-OWNER:', new.owner); "
+        "late = b.finish(old, old.owner, True); "
         "print('LATE:', late); "
         "cur = b.get(old.id); print('STATE:', cur.status, cur.owner, cur.attempts); "
-        "ok = b.finish(new, 'w-new', True); print('NEWER:', ok)",
+        "ok = b.finish(new, new.owner, True); print('NEWER:', ok)",
     )
     assert expired.returncode == 0, expired.stderr[-2000:]
     lines = expired.stdout.strip().splitlines()
     assert "REC: 1" in lines, lines
     assert "SAME: True" in lines, lines
     assert "LATE: False" in lines, lines
-    assert "STATE: RUNNING w-new 2" in lines, lines
+    state = [line for line in lines if line.startswith("STATE:")][0]
+    assert state.startswith("STATE: RUNNING w-new:") and state.endswith(" 2"), lines
     assert "NEWER: True" in lines, lines
     assert _status(produced["id"])["status"] == "SUCCEEDED"
+
+
+def test_old_requeue_cannot_duplicate_a_reclaimed_attempt():
+    """Expired attempt requeued by recovery, reclaimed by B; the old worker's late
+    requeue must be rejected and must not insert a second queued copy."""
+    _redis_or_gate()
+    produced = _produce()
+    script = (
+        "import sys, time; sys.path.insert(0, {api_dir!r}); "
+        "from worker.jobs import RedisBackend; "
+        "import redis as redis_lib; "
+        "b = RedisBackend({redis_url!r}); "
+        "old = b.claim('w-old', 0.5); "
+        "time.sleep(1.0); "
+        "print('REC:', b.recover_stale()); "
+        "new = b.claim('w-new', 30); "
+        "late = b.requeue(old, old.owner, 'late retry'); print('LATE-REQUEUE:', late); "
+        "raw = redis_lib.Redis.from_url({redis_url!r}); "
+        "print('QUEUED-COPIES:', raw.lrange('tp:queue', 0, -1).count(new.id.encode())); "
+        "print('STATE:', b.get(old.id).status, b.get(old.id).owner); "
+        "print('FINISH-NEW:', b.finish(new, new.owner, True))"
+    )
+    proc = _run(script)
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    lines = proc.stdout.strip().splitlines()
+    assert "LATE-REQUEUE: False" in lines, lines
+    assert "QUEUED-COPIES: 0" in lines, lines  # claimed by B; no duplicate reinserted
+    assert "FINISH-NEW: True" in lines, lines
+    assert _status(produced["id"])["status"] == "SUCCEEDED"
+
+
+def test_old_renewal_cannot_extend_anothers_lease():
+    """After reclaim, the old token's heartbeat renewals fail and the new lease is intact."""
+    _redis_or_gate()
+    produced = _produce()
+    script = (
+        "import sys, time; sys.path.insert(0, {api_dir!r}); "
+        "from worker.jobs import RedisBackend; "
+        "b = RedisBackend({redis_url!r}); "
+        "old = b.claim('w-old', 0.5); "
+        "time.sleep(1.0); "
+        "b.recover_stale(); "
+        "new = b.claim('w-new', 30); print('LEASE-NEW:', new.lease_expires_at); "
+        "print('RENEW-OLD:', b.renew(old, old.owner, 30)); "
+        "cur = b.get(old.id); print('LEASE-NOW:', cur.lease_expires_at); "
+        "print('FINISH-NEW:', b.finish(new, new.owner, True))"
+    )
+    proc = _run(script)
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    lines = proc.stdout.strip().splitlines()
+    assert "RENEW-OLD: False" in lines, lines
+    before = [line for line in lines if line.startswith("LEASE-NEW:")][0].split(":", 1)[
+        1
+    ]
+    after = [line for line in lines if line.startswith("LEASE-NOW:")][0].split(":", 1)[
+        1
+    ]
+    assert before == after, lines  # old renewal extended nothing
+    assert _status(produced["id"])["status"] == "SUCCEEDED"
+
+
+def test_interleaved_finish_vs_reclaim_keeps_single_truth():
+    """Force guard/write interleaving: an old finish racing recovery+reclaim must
+    leave exactly one truth — old-won (SUCCEEDED, no second attempt) or new-won
+    (old rejected, newer RUNNING with attempts==2)."""
+    _redis_or_gate()
+    script = (
+        (
+            "import sys, threading; sys.path.insert(0, '@@API@@'); "
+            "from worker.jobs import RedisBackend; "
+            "import redis as redis_lib; "
+            "raw = redis_lib.Redis.from_url('@@REDIS@@'); "
+            "raw.hset('tp:job:race', mapping={'id': 'race', 'kind': 'echo', 'status': 'QUEUED', "
+            "'attempts': '0', 'max_attempts': '5', 'idempotency_key': '', 'payload': '{}', "
+            "'error': '', 'error_class': '', 'owner': '', 'lease_expires_at': '0', "
+            "'correlation_id': '', 'created_at': '0', 'updated_at': '0'}); "
+            "raw.lpush('tp:queue', 'race'); "
+            "b = RedisBackend('@@REDIS@@'); "
+            "old = b.claim('w-old', 0.05); "
+            "import time; time.sleep(0.3); "  # lease deterministically expired
+            "bar = threading.Barrier(2); out = {}\n"
+            "def do_finish():\n"
+            "    bar.wait(); out['old'] = b.finish(old, old.owner, True)\n"
+            "def do_reclaim():\n"
+            "    bar.wait(); out['rec'] = b.recover_stale(); "
+            "n = b.claim('w-new', 30); out['new'] = (n.id, n.owner, n.attempts) if n else None\n"
+            "t1 = threading.Thread(target=do_finish); t2 = threading.Thread(target=do_reclaim); "
+            "[t.start() for t in (t1, t2)]; [t.join() for t in (t1, t2)]; "
+            "cur = b.get('race'); "
+            "print('OLD:', out['old'], 'REC:', out['rec'], 'NEW:', out['new']); "
+            "print('FINAL:', cur.status, cur.owner, cur.attempts); "
+            "raw.delete('tp:job:race')"
+        )
+        .replace("@@API@@", repr(API_DIR)[1:-1])
+        .replace("@@REDIS@@", TEST_REDIS_URL)
+    )
+    for _ in range(3):
+        proc = subprocess.run(
+            [sys.executable, "-c", script], capture_output=True, text=True, timeout=120
+        )
+        assert proc.returncode == 0, proc.stderr[-2000:]
+        lines = proc.stdout.strip().splitlines()
+        final = [line for line in lines if line.startswith("FINAL:")][0]
+        first = [line for line in lines if line.startswith("OLD:")][0]
+        if "OLD: True" in first:
+            # Old won: its SUCCEEDED stands, nothing was requeued/reclaimed.
+            assert "FINAL: SUCCEEDED w-old:" in final and final.endswith(" 1"), lines
+        else:
+            # Recovery won: old rejected, newer attempt owns the job.
+            assert "FINAL: RUNNING w-new:" in final and final.endswith(" 2"), lines
+
+
+def test_two_consecutive_crashes_terminate_at_max_attempts():
+    """Two worker crashes with max_attempts=2 and NO handler ever running: the second
+    recovery must transition the job to terminal FAILED (not requeue it)."""
+    _redis_or_gate()
+    produced = _produce(attempts=2)
+    script = (
+        "import sys, time; sys.path.insert(0, {api_dir!r}); "
+        "from worker.jobs import RedisBackend; "
+        "b = RedisBackend({redis_url!r}); "
+        "first = b.claim('crasher-1', 0.3); print('CLAIMED-1:', first.id); "
+        "time.sleep(0.6); "
+        "print('RECOVER-1:', b.recover_stale()); "
+        "second = b.claim('crasher-2', 0.3); print('ATTEMPTS-2:', second.attempts); "
+        "time.sleep(0.6); "
+        "print('RECOVER-2:', b.recover_stale())"
+    )
+    proc = _run(script)
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    lines = proc.stdout.strip().splitlines()
+    assert f"CLAIMED-1: {produced['id']}" in lines, lines
+    assert "RECOVER-1: 1" in lines, lines  # attempts 1 < 2 -> requeued
+    assert "ATTEMPTS-2: 2" in lines, lines
+    assert "RECOVER-2: 1" in lines, lines  # attempts 2 >= 2 -> terminal, counted
+    final = _status(produced["id"])
+    assert final["status"] == "FAILED", final
+    assert final["attempts"] == 2, final
+    assert final["error_class"] == "MaxAttemptsExhausted", final
+    assert "attempts exhausted" in (final["error"] or ""), final
 
 
 def test_repeated_crash_recovery_respects_max_attempts():

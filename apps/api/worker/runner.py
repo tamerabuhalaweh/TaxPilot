@@ -79,11 +79,12 @@ def service_tick(
     job = backend.claim(worker_id, lease_ttl)
     if job is None:
         return None, OUT_EMPTY
+    owner = job.owner  # per-attempt fencing token minted at claim; never the bare worker id
     stop = threading.Event()
     beat = None
     if heartbeat:
         beat = threading.Thread(
-            target=_heartbeat, args=(backend, job.id, worker_id, lease_ttl, stop), daemon=True
+            target=_heartbeat, args=(backend, job.id, owner, lease_ttl, stop), daemon=True
         )
         beat.start()
     try:
@@ -92,16 +93,16 @@ def service_tick(
         except Exception as exc:
             message = f"{type(exc).__name__}: {exc}"
             if job.attempts < job.max_attempts:
-                if backend.requeue(job, worker_id, f"retryable: {message}"):
+                if backend.requeue(job, owner, f"retryable: {message}"):
                     return job, OUT_RETRIED
             else:
-                if backend.finish(job, worker_id, False, error=message, error_class=type(exc).__name__):
+                if backend.finish(job, owner, False, error=message, error_class=type(exc).__name__):
                     return job, OUT_FAILED
-            log.warning("stale attempt discarded (job=%s owner=%s)", job.id, worker_id)
+            log.warning("stale attempt discarded (job=%s owner=%s)", job.id, owner)
             return job, OUT_STALE
-        if backend.finish(job, worker_id, True):
+        if backend.finish(job, owner, True):
             return job, OUT_COMPLETED
-        log.warning("stale completion rejected (job=%s owner=%s)", job.id, worker_id)
+        log.warning("stale completion rejected (job=%s owner=%s)", job.id, owner)
         return job, OUT_STALE
     finally:
         stop.set()

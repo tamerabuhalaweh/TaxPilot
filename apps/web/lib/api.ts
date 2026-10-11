@@ -19,6 +19,7 @@ export interface MePayload {
   user_id: string;
   email: string;
   active_tenant_id: string | null;
+  csrf_token?: string | null;
   memberships: Membership[];
 }
 
@@ -35,11 +36,28 @@ export interface ApiError {
   error: { code: string; message: string };
 }
 
+// Session CSRF token, read per request from the readable tp_csrf companion cookie
+// (survives full-page navigations, unlike module memory). The httpOnly session
+// cookie itself is never readable here; cross-origin JS cannot read either value.
+function csrfFromCookie(): string | null {
+  if (typeof document === "undefined") return null;
+  for (const part of document.cookie.split(";")) {
+    const [key, ...rest] = part.trim().split("=");
+    if (key === "tp_csrf") return decodeURIComponent(rest.join("=")) || null;
+  }
+  return null;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(path, {
-    headers: { "content-type": "application/json" },
-    ...init
-  });
+  const headers: Record<string, string> = { "content-type": "application/json" };
+  const method = (init?.method ?? "GET").toUpperCase();
+  // Session-bound CSRF token for cookie-ambient mutations (P0-C). Login,
+  // register, and verify carry no session yet and are exempt server-side.
+  const csrf = csrfFromCookie();
+  if (csrf && method !== "GET" && method !== "HEAD" && !path.endsWith("/auth/login")) {
+    headers["x-csrf-token"] = csrf;
+  }
+  const res = await fetch(path, { ...init, headers: { ...headers, ...(init?.headers ?? {}) } });
   if (!res.ok) {
     let code = `HTTP_${res.status}`;
     let message = `Request failed: ${res.status}`;

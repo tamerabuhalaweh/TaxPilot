@@ -4,7 +4,6 @@ cross-tenant object access returns 404 (no existence oracle)."""
 from datetime import timedelta
 
 from fastapi import APIRouter, Depends, Request
-from sqlalchemy.exc import IntegrityError
 
 from ..deps import settings_singleton
 from ..errors import AppError
@@ -20,6 +19,7 @@ from ..schemas.sprint1 import (
     MemberOut,
     MemberPatch,
     MembershipOut,
+    TransferOwnershipIn,
 )
 from ..security import hash_token, new_token, normalize_email
 from ..sprint1_auth import (
@@ -29,6 +29,7 @@ from ..sprint1_auth import (
     correlation_of,
     get_current_user,
     open_store,
+    require_mutation,
     require_roles,
     require_tenant,
     tenant_of,
@@ -85,6 +86,10 @@ def invite(
     body: InviteIn, request: Request, user: CurrentUser = Depends(require_roles(*MANAGE_MEMBERS))
 ) -> InviteOut:
     settings = settings_singleton()
+    # P0-A: ownership is never granted through invitations, by anyone.
+    # New owners arise only through the explicit audited transfer flow below.
+    if body.role == "owner":
+        raise AppError("OWNER_PROTECTED", "Ownership is granted only through ownership transfer.")
     try:
         email = normalize_email(body.email)
     except ValueError as exc:
@@ -127,34 +132,96 @@ def invite(
 
 
 @router.post("/members/invitations/accept")
-def accept(body: AcceptInviteIn, request: Request, user: CurrentUser = Depends(get_current_user)) -> dict:
+def accept(body: AcceptInviteIn, request: Request, user: CurrentUser = Depends(require_mutation)) -> dict:
+    """Replay contract: acceptance is idempotent for the same authorized user —
+    replaying a consumed token returns the same tenant (200), never a duplicate
+    membership and never an error. Wrong email, expiry, or unknown tokens reject."""
     store, conn, _ = open_store(request)
     try:
-        inv = store.get_invitation(hash_token(body.token.strip()))
-        if inv is None or inv["accepted_at"] is not None or inv["expires_at"] < utcnow():
+        claimed = store.claim_invitation(hash_token(body.token.strip()))
+        if claimed is None:
+            # Either unknown/expired, or already consumed: distinguish replay by the
+            # same user (idempotent success) from anything else (rejection).
+            prior = store.get_invitation(hash_token(body.token.strip()))
+            if (
+                prior is not None
+                and prior["accepted_at"] is not None
+                and prior["email"].lower() == user.email.lower()
+            ):
+                existing = store.get_membership(str(prior["tenant_id"]), user.user_id)
+                if existing is not None:
+                    conn.rollback()
+                    return {"tenant_id": str(prior["tenant_id"])}
             raise AppError("VALIDATION_ERROR", "Invalid or expired invitation.")
-        if inv["email"].lower() != user.email.lower():
+        if claimed["email"].lower() != user.email.lower():
+            conn.rollback()
             raise AppError("FORBIDDEN", "Invitation was issued to a different email address.")
-        try:
-            store.add_membership(str(inv["tenant_id"]), user.user_id, inv["role"])
-        except IntegrityError:
-            pass  # already a member: accepting again is a safe no-op
-        store.accept_invitation(str(inv["id"]))
+        store.add_membership_idempotent(str(claimed["tenant_id"]), user.user_id, claimed["role"])
+        store.accept_invitation(str(claimed["id"]))
         store.audit(
             "member.accepted",
-            str(inv["tenant_id"]),
+            str(claimed["tenant_id"]),
             user.user_id,
-            f"invitation:{inv['id']}",
+            f"invitation:{claimed['id']}",
             correlation_of(request),
         )
         conn.commit()
-        tenant_id = str(inv["tenant_id"])
+        tenant_id = str(claimed["tenant_id"])
     except Exception:
         conn.rollback()
         raise
     finally:
         conn.close()
     return {"tenant_id": tenant_id}
+
+
+@router.post("/members/transfer-ownership", response_model=MemberOut)
+def transfer_ownership(
+    body: TransferOwnershipIn,
+    request: Request,
+    user: CurrentUser = Depends(require_roles("owner")),
+) -> MemberOut:
+    """The single authorized path to (co-)grant ownership (P0-A).
+
+    The calling Owner explicitly confirms; the target must be an active member of
+    the same workspace. The caller steps down to admin in the SAME transaction,
+    and the workspace is verified to still hold an active owner before commit —
+    concurrent transfers serialize on row locks and can never empty ownership.
+    Every transfer is audited with both membership ids.
+    """
+    if not body.confirm:
+        raise AppError("VALIDATION_ERROR", "Ownership transfer requires explicit confirmation.")
+    store, conn, _ = open_store(request)
+    try:
+        tenant_id = tenant_of(user)
+        caller = store.get_membership(tenant_id, user.user_id)
+        if caller is None or caller["role"] != "owner":
+            raise AppError("FORBIDDEN", "Only an owner can transfer ownership.")
+        target = store.get_membership_by_id(body.to_membership_id, tenant_id, for_update=True)
+        if target is None or target["status"] != "active":
+            raise AppError("NOT_FOUND", "Target member not found or inactive.")
+        if str(target["user_id"]) == user.user_id:
+            raise AppError("VALIDATION_ERROR", "You already hold ownership.")
+        store.update_membership(str(caller["id"]), tenant_id, role="admin")
+        promoted = store.update_membership(str(target["id"]), tenant_id, role="owner")
+        assert promoted is not None
+        remaining = store.active_owner_count(tenant_id, lock=True)
+        if remaining < 1:  # defensive: structural logic above already preserves this
+            raise AppError("STATE_CONFLICT", "Transfer would leave no active owner.")
+        store.audit(
+            "ownership.transferred",
+            tenant_id,
+            user.user_id,
+            f"from:{caller['id']} to:{target['id']}",
+            correlation_of(request),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    return _member_out(promoted)
 
 
 @router.patch("/members/{membership_id}", response_model=MemberOut)
@@ -164,8 +231,18 @@ def patch_member(
     request: Request,
     user: CurrentUser = Depends(require_roles(*MANAGE_MEMBERS)),
 ) -> MemberOut:
+    # P0-A: owner records are untouchable through member administration.
+    # Role grants/revocation involving owners — including self-demotion and
+    # deactivation — happen only through the audited transfer flow.
+    if body.role == "owner":
+        raise AppError("OWNER_PROTECTED", "Ownership is granted only through ownership transfer.")
     store, conn, _ = open_store(request)
     try:
+        target = store.get_membership_by_id(membership_id, tenant_of(user), for_update=True)
+        if target is None:
+            raise AppError("NOT_FOUND", "Member not found.")
+        if target["role"] == "owner":
+            raise AppError("OWNER_PROTECTED", "Owner records change only through ownership transfer.")
         fields: dict = {}
         if body.role is not None:
             fields["role"] = body.role
@@ -174,10 +251,7 @@ def patch_member(
         if not fields:
             raise AppError("VALIDATION_ERROR", "Nothing to update.")
         updated = store.update_membership(membership_id, tenant_of(user), **fields)
-        if updated is None:
-            raise AppError("NOT_FOUND", "Member not found.")
-        if str(updated["user_id"]) == user.user_id and updated["status"] != "active":
-            raise AppError("VALIDATION_ERROR", "You cannot deactivate your own access.")
+        assert updated is not None
         if body.role is not None:
             store.audit(
                 "member.role_changed",
@@ -216,10 +290,17 @@ def _client_out(c: dict) -> ClientOut:
 
 
 @router.get("/clients", response_model=list[ClientOut])
-def list_clients(request: Request, user: CurrentUser = Depends(require_tenant)) -> list[ClientOut]:
+def list_clients(
+    request: Request,
+    status: str | None = None,
+    user: CurrentUser = Depends(require_tenant),
+) -> list[ClientOut]:
+    """Default lists active clients only (archived hidden); ?status=archived|all|active."""
+    if status not in (None, "active", "archived", "all"):
+        raise AppError("VALIDATION_ERROR", "status must be active, archived, or all.")
     store, conn, _ = open_store(request)
     try:
-        return [_client_out(c) for c in store.list_clients(tenant_of(user))]
+        return [_client_out(c) for c in store.list_clients(tenant_of(user), status or "active")]
     finally:
         conn.close()
 

@@ -14,6 +14,7 @@ Independent foundation work proceeds; these restrict production readiness, not t
 | B-08 | Tax-return formats (fields/basis) | Conditional return recon | OPEN — gated conditional-P0 |
 | B-09 | Repository classification (public vs private/redacted) | What docs/fixtures may enter the repo | OPEN — asked of PO in PR #33 |
 | B-10 | SRS v1.1 (PR #15) + jurisdiction amendment (PR #32 + corrections PR #33) approval | JUR schema/API coding, then domain slices | OPEN — foundation only until approved |
+| B-11 | Email delivery + password reset + MFA | Production user onboarding completeness (FR-ID-003) | OPEN — dev-token flow only; do not claim onboarding complete |
 
 ## Security notes (Sprint 0, 2026-10-09; corrections round 2)
 - Backend: `pip-audit` initially found 14 advisories in transitive `starlette 0.41.3` (via `fastapi 0.115.6`); upgraded to `fastapi==0.143.0` (starlette 1.7.0) — re-audit clean, full suite re-green. Pinned in `apps/api/requirements.txt`.

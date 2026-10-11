@@ -32,7 +32,7 @@ from ..security import (
     validate_password,
     verify_password,
 )
-from ..sprint1_auth import SESSION_COOKIE, CurrentUser, correlation_of, get_current_user, open_store
+from ..sprint1_auth import SESSION_COOKIE, CurrentUser, correlation_of, open_store, require_mutation
 from ..store import session_expiry, utcnow
 
 router = APIRouter(tags=["auth"])
@@ -47,7 +47,7 @@ def _limiter(request: Request, settings: Settings) -> RedisRateLimiter:
     return RedisRateLimiter(client, settings.login_max_attempts, settings.login_window_seconds)
 
 
-def _set_session_cookie(response: Response, token: str, settings: Settings) -> None:
+def _set_session_cookie(response: Response, token: str, csrf_token: str | None, settings: Settings) -> None:
     response.set_cookie(
         SESSION_COOKIE,
         token,
@@ -57,6 +57,25 @@ def _set_session_cookie(response: Response, token: str, settings: Settings) -> N
         samesite="lax",
         path="/",
     )
+    # Companion CSRF cookie: readable by same-origin JS (never httpOnly) so the
+    # app survives full-page navigations. Useless to attackers: cross-origin JS
+    # cannot read it (same-origin policy), and the backend verifies it against
+    # the session-bound hash on every mutation.
+    if csrf_token is not None:
+        response.set_cookie(
+            "tp_csrf",
+            csrf_token,
+            max_age=settings.session_ttl_hours * 3600,
+            httponly=False,
+            secure=settings.cookie_secure,
+            samesite="lax",
+            path="/",
+        )
+
+
+def _clear_session_cookies(response: Response) -> None:
+    response.delete_cookie(SESSION_COOKIE, path="/")
+    response.delete_cookie("tp_csrf", path="/")
 
 
 def _client_ip(request: Request) -> str:
@@ -112,7 +131,7 @@ def register(body: RegisterIn, request: Request, response: Response) -> Register
 def verify(body: VerifyIn, request: Request) -> dict:
     store, conn, _ = open_store(request)
     try:
-        record = store.consume_verification(hash_token(body.token.strip()))
+        record = store.claim_verification(hash_token(body.token.strip()))
         if record is None:
             raise AppError("VALIDATION_ERROR", "Invalid or expired verification token.")
         store.mark_verified(str(record["user_id"]))
@@ -134,17 +153,25 @@ def verify(body: VerifyIn, request: Request) -> dict:
 
 @router.post("/auth/login", response_model=LoginOut)
 def login(body: LoginIn, request: Request, response: Response) -> LoginOut | JSONResponse:
+    """Rate limiting (P0-B): per-email ONLY at this tier.
+
+    The backend cannot see browser IPs behind the BFF proxy (all requests arrive
+    from the Next.js server address, and forwarded headers are untrusted and
+    stripped). A shared per-IP bucket would let one user lock out every customer
+    of a deployment — and resetting it on anyone's success erases others'
+    protection. Edge/browser-IP throttling belongs to the internet-facing BFF
+    tier (implemented there with per-instance windows; platform edge limiting is
+    the production answer). Account brute force is stopped here, per account.
+    """
     settings = settings_singleton()
     limiter = _limiter(request, settings)
     try:
         email = normalize_email(body.email)
     except ValueError:
         raise AppError("UNAUTHENTICATED", "Invalid email or password.") from None
-    ident = email
-    ip = _client_ip(request)
     try:
-        if not limiter.allowed("login", ident) or not limiter.allowed("login-ip", ip):
-            wait = limiter.retry_after("login", ident)
+        if not limiter.allowed("login", email):
+            wait = limiter.retry_after("login", email)
             return JSONResponse(
                 status_code=429,
                 content={"error": {"code": "RATE_LIMITED", "message": "Too many attempts. Try again later."}},
@@ -160,20 +187,21 @@ def login(body: LoginIn, request: Request, response: Response) -> LoginOut | JSO
             or user["status"] != "active"
             or not verify_password(body.password, user["password_hash"])
         ):
-            limiter.hit("login", ident)
-            limiter.hit("login-ip", ip)
+            limiter.hit("login", email)
             raise AppError("UNAUTHENTICATED", "Invalid email or password.")
         if not user["email_verified"]:
             raise AppError("FORBIDDEN", "Email address is not verified.")
         memberships = store.memberships_for_user(str(user["id"]))
         active = memberships[0]["tenant_id"] if memberships else None
         token = new_token()
+        csrf_token = new_token(24)
         store.create_session(
             str(user["id"]),
             str(active) if active else None,
             hash_token(token),
+            hash_token(csrf_token),
             session_expiry(settings.session_ttl_hours),
-            ip,
+            _client_ip(request),
             request.headers.get("user-agent"),
         )
         store.audit(
@@ -184,29 +212,32 @@ def login(body: LoginIn, request: Request, response: Response) -> LoginOut | JSO
             correlation_of(request),
         )
         conn.commit()
-        limiter.reset("login", ident)
-        limiter.reset("login-ip", ip)
+        # Reset ONLY this account's counter: never touch other users' buckets.
+        limiter.reset("login", email)
     except Exception:
         conn.rollback()
         raise
     finally:
         conn.close()
-    _set_session_cookie(response, token, settings)
-    return _login_out(user, memberships)
+    _set_session_cookie(response, token, csrf_token, settings)
+    return _login_out(user, memberships, csrf_token=csrf_token)
 
 
-def _login_out(user: dict, memberships: list, active_id: str | None = None) -> LoginOut:
+def _login_out(
+    user: dict, memberships: list, active_id: str | None = None, csrf_token: str | None = None
+) -> LoginOut:
     first = str(memberships[0]["tenant_id"]) if memberships else None
     return LoginOut(
         user_id=str(user["id"]),
         email=user["email"],
         active_tenant_id=active_id or first,
+        csrf_token=csrf_token,
         memberships=[MembershipOut(tenant_id=str(m["tenant_id"]), role=m["role"]) for m in memberships],
     )
 
 
 @router.post("/auth/logout")
-def logout(request: Request, response: Response, user: CurrentUser = Depends(get_current_user)) -> dict:
+def logout(request: Request, response: Response, user: CurrentUser = Depends(require_mutation)) -> dict:
     store, conn, _ = open_store(request)
     try:
         store.revoke_session(user.session_id)
@@ -223,13 +254,13 @@ def logout(request: Request, response: Response, user: CurrentUser = Depends(get
         raise
     finally:
         conn.close()
-    response.delete_cookie(SESSION_COOKIE, path="/")
+    _clear_session_cookies(response)
     return {"logged_out": True}
 
 
 @router.post("/auth/tenant", response_model=LoginOut)
 def switch_tenant(
-    body: SwitchTenantIn, request: Request, response: Response, user: CurrentUser = Depends(get_current_user)
+    body: SwitchTenantIn, request: Request, response: Response, user: CurrentUser = Depends(require_mutation)
 ) -> LoginOut:
     settings = settings_singleton()
     store, conn, _ = open_store(request)
@@ -239,12 +270,14 @@ def switch_tenant(
             raise AppError("FORBIDDEN", "No workspace access.")
         store.revoke_session(user.session_id)
         token = new_token()
+        csrf_token = new_token(24)
         full_user = store.get_user(user.user_id)
         assert full_user is not None
         store.create_session(
             user.user_id,
             body.tenant_id,
             hash_token(token),
+            hash_token(csrf_token),
             session_expiry(settings.session_ttl_hours),
             _client_ip(request),
             request.headers.get("user-agent"),
@@ -263,5 +296,6 @@ def switch_tenant(
         raise
     finally:
         conn.close()
-    _set_session_cookie(response, token, settings)
-    return _login_out(full_user, memberships, active_id=body.tenant_id)
+    _set_session_cookie(response, token, csrf_token, settings)
+    return _login_out(full_user, memberships, active_id=body.tenant_id, csrf_token=csrf_token)
+

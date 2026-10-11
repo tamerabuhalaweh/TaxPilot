@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { PROXY_MAX_RESPONSE_BYTES, bodyTooLarge, filterHeaders } from "../../../../lib/proxy";
+import { edgeClientKey, edgeLoginAllowed, edgeLoginHit, edgeRetryAfterMs } from "../../../../lib/rate-limit";
 
 /**
  * Same-origin API proxy (Backend-for-Frontend).
@@ -23,6 +24,20 @@ async function forward(req: NextRequest, segments: string[], method: string): Pr
       { status: 413 }
     );
   }
+  // Edge login throttle (P0-B): per observed-peer key, before touching the backend.
+  // The backend keeps authoritative per-email limiting; this tier stops sprays.
+  if (method === "POST" && segments.join("/") === "auth/login") {
+    const key = edgeClientKey(req.headers.get("x-forwarded-for"));
+    const now = Date.now();
+    if (!edgeLoginAllowed(key, now)) {
+      const waitSecs = Math.ceil(edgeRetryAfterMs(key, now) / 1000);
+      return NextResponse.json(
+        { error: { code: "RATE_LIMITED", message: "Too many attempts. Try again later." } },
+        { status: 429, headers: { "Retry-After": String(waitSecs) } }
+      );
+    }
+    edgeLoginHit(key, now);
+  }
   const url = `${backendBase()}/api/v1/${segments.join("/")}${req.nextUrl.search}`;
   const headers = filterHeaders(req.headers.entries());
   const controller = new AbortController();
@@ -37,11 +52,18 @@ async function forward(req: NextRequest, segments: string[], method: string): Pr
         { status: 502 }
       );
     }
-    // set-cookie is forwarded explicitly: the backend owns session issuance and
-    // the browser stays same-origin, so no third-party cookie exposure occurs.
+    // set-cookie values are forwarded explicitly (all of them: session + CSRF):
+    // the backend owns session issuance and the browser stays same-origin, so
+    // no third-party cookie exposure occurs.
     const outgoing = new Headers({ "content-type": res.headers.get("content-type") ?? "application/json" });
-    const setCookie = res.headers.get("set-cookie");
-    if (setCookie) outgoing.set("set-cookie", setCookie);
+    const headersWithCookies = res.headers as Headers & { getSetCookie?: () => string[] };
+    const setCookies =
+      typeof headersWithCookies.getSetCookie === "function"
+        ? headersWithCookies.getSetCookie()
+        : res.headers.get("set-cookie")
+          ? [res.headers.get("set-cookie") as string]
+          : [];
+    for (const cookie of setCookies) outgoing.append("set-cookie", cookie);
     return new NextResponse(buf, { status: res.status, headers: outgoing });
   } catch {
     return NextResponse.json(

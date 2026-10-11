@@ -35,7 +35,7 @@ def _db_or_skip() -> str:
 
 def test_migration_discovery_exact_and_ordered():
     names = [p.name for p in discover()]
-    assert names == ["0001_schema_migrations.sql", "0002_auth_tenancy_clients.sql"]
+    assert names == ["0001_schema_migrations.sql", "0002_auth_tenancy_clients.sql", "0003_session_csrf.sql"]
 
 
 def test_discover_rejects_bad_names(tmp_path):  # type: ignore[no-untyped-def]
@@ -55,7 +55,7 @@ def test_first_migration_applies_and_rerun_is_noop():
     url = _db_or_skip()
     with psycopg.connect(_to_libpq(url), connect_timeout=5) as conn:
         conn.execute("DROP TABLE IF EXISTS schema_migrations")
-    assert migrate(url) == ["0001", "0002"]
+    assert migrate(url) == ["0001", "0002", "0003"]
     assert migrate(url) == []
 
 
@@ -72,9 +72,10 @@ def test_failed_sql_records_nothing_and_leaves_clean_state(tmp_path):  # type: i
         rows = conn.execute("SELECT version FROM schema_migrations").fetchall()
     assert "0002" not in {r[0] for r in rows}
     # Restore the real ledger for later tests in this session.
-    assert migrate(url) == ["0001", "0002"]
+    assert migrate(url) == ["0001", "0002", "0003"]
 
 
 def test_unreachable_database_raises():
     with pytest.raises(Exception):
         migrate("postgresql://u:p@127.0.0.1:9/db")
+

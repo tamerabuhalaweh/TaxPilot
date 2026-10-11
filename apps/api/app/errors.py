@@ -21,11 +21,13 @@ class ErrorEnvelope(BaseModel):
 _STATUS_BY_CODE = {
     "UNAUTHENTICATED": 401,
     "FORBIDDEN": 403,
+    "OWNER_PROTECTED": 403,
     "NOT_FOUND": 404,
     "STATE_CONFLICT": 409,
     "APPROVAL_BLOCKED": 409,
     "VALIDATION_ERROR": 422,
     "RATE_LIMITED": 429,
+    "INTERNAL_ERROR": 500,  # default fallback, listed explicitly so the map stays total
     # Jurisdiction placeholders (contracts approved; enforcement lands with JUR-01/02)
     "JURISDICTION_NOT_SUPPORTED": 422,
     "TAX_CONTEXT_REQUIRED": 409,

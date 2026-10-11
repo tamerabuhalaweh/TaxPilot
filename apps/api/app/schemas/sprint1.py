@@ -40,6 +40,7 @@ class LoginOut(BaseModel):
     user_id: str
     email: str
     active_tenant_id: str | None = None
+    csrf_token: str | None = None  # session-bound; required on cookie mutations
     memberships: list[MembershipOut] = []
 
 
@@ -67,6 +68,11 @@ class AcceptInviteIn(BaseModel):
 class MemberPatch(BaseModel):
     role: Role | None = None
     status: Literal["active", "deactivated"] | None = None
+
+
+class TransferOwnershipIn(BaseModel):
+    to_membership_id: str
+    confirm: bool = False
 
 
 class MemberOut(BaseModel):

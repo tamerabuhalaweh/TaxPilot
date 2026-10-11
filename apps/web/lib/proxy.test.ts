@@ -7,6 +7,7 @@ describe("proxy policy", () => {
       ["authorization", "Bearer x"],
       ["cookie", "tp_session=y"],
       ["x-request-id", "1"],
+      ["x-csrf-token", "t"],
       ["x-forwarded-for", "1.2.3.4"],
       ["forwarded", "for=1.2.3.4"],
       ["host", "evil.example"],
@@ -15,7 +16,8 @@ describe("proxy policy", () => {
     expect(out).toEqual({
       authorization: "Bearer x",
       cookie: "tp_session=y",
-      "x-request-id": "1"
+      "x-request-id": "1",
+      "x-csrf-token": "t"
     });
   });
 

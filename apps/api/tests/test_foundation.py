@@ -148,6 +148,8 @@ def test_unhandled_errors_use_envelope_without_internals():
 
 
 def test_app_error_codes_map_to_status():
+    from app.errors import _STATUS_BY_CODE
+
     app = create_app()
 
     @app.get("/__teapot")  # type: ignore[misc]
@@ -161,6 +163,19 @@ def test_app_error_codes_map_to_status():
         assert r.json()["error"]["code"] == "TAX_CONTEXT_REQUIRED"
     finally:
         app.router.routes = [rt for rt in app.router.routes if getattr(rt, "path", "") != "/__teapot"]
+    # Every code raised anywhere in the app must map to an explicit status:
+    # unmapped codes silently become 500 (caught live on OWNER_PROTECTED).
+    import pathlib
+    import re
+
+    root = pathlib.Path(__file__).resolve().parents[3]
+    raised = set()
+    for path in list((root / "apps" / "api" / "app").rglob("*.py")) + list(
+        (root / "apps" / "api" / "worker").rglob("*.py")
+    ):
+        raised.update(re.findall(r'AppError\("([A-Z_]+)"', path.read_text(encoding="utf-8")))
+    unmapped = raised - set(_STATUS_BY_CODE)
+    assert not unmapped, f"AppError codes without status mapping: {unmapped}"
 
 
 def test_redaction():

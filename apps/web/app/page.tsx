@@ -92,10 +92,8 @@ export default function DashboardPage() {
       )}
       {state === "signed-out" && (
         <div className="tp-actions">
-          <EmptyState title="Sign in required" hint="Sign in to see your workspace and clients." />
-          <Link href="/login" className="tp-primary">
-            Sign in
-          </Link>
+          <EmptyState title={t(locale, "dashboard.signinRequired")} hint={t(locale, "dashboard.signinRequiredHint")} />
+          <Link href="/login" className="tp-primary"> {t(locale, "dashboard.signin")} </Link>
         </div>
       )}
       {state === "ready" && me ? (
@@ -104,7 +102,7 @@ export default function DashboardPage() {
             <StatusPill label={t(locale, "health.backendUp")} />
             <StatusPill label={`${me.email} · ${me.memberships[0]?.role ?? "member"}`} />
           </div>
-          <h2>Clients</h2>
+          <h2>{t(locale, "dashboard.clients")}</h2>
           {error ? <Alert message={error} /> : null}
           {clients.length === 0 ? (
             <EmptyState title={t(locale, "dashboard.newReview")} hint={t(locale, "dashboard.empty")} />
@@ -120,27 +118,24 @@ export default function DashboardPage() {
           <form onSubmit={addClient}>
             <p>
               <label>
-                New client name
+                {t(locale, "dashboard.newClientName")}
                 <br />
                 <input required maxLength={200} value={name} onChange={(e) => setName(e.target.value)} />
               </label>
             </p>
             <div className="tp-actions">
-              <Button type="submit" disabled={busy || name.trim() === ""}>
-                Add Client
-              </Button>
+              <Button type="submit" disabled={busy || name.trim() === ""}> {t(locale, "dashboard.addClient")} </Button>
             </div>
           </form>
           <div className="tp-actions">
             <Link href="/reviews/new" className="tp-primary">
               {t(locale, "dashboard.newReview")}
             </Link>
-            <Button type="button" onClick={signOut}>
-              Sign out
-            </Button>
+            <Button type="button" onClick={signOut}> {t(locale, "dashboard.signout")} </Button>
           </div>
         </>
       ) : null}
     </main>
   );
 }
+

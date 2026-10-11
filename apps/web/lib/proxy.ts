@@ -11,6 +11,7 @@ export const FORWARDED_HEADERS = [
   "accept",
   "accept-language",
   "x-request-id",
+  "x-csrf-token",
   "idempotency-key"
 ] as const;
 

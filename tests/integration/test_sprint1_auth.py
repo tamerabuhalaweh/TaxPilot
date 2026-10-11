@@ -79,14 +79,26 @@ def login(client: TestClient, email: str, password: str = PASSWORD):
     )
 
 
+def arm_csrf(client: TestClient, login_body: dict) -> None:
+    """Store the session-bound CSRF token for subsequent cookie mutations (P0-C)."""
+    token = login_body.get("csrf_token")
+    assert token, "login must issue a CSRF token"
+    client.headers.update({"X-CSRF-Token": token})
+
+
+def disarm_csrf(client: TestClient) -> None:
+    client.headers.pop("X-CSRF-Token", None)
+
+
 def onboard(client: TestClient, tag: str) -> dict:
-    """register -> verify -> login; returns registration payload (dev token exposed)."""
+    """register -> verify -> login (CSRF armed); returns payload (dev token exposed)."""
     email = _email(tag)
     reg = register(client, email)
     assert reg["verification_token"], "dev token exposure required for test onboarding"
     verify(client, reg["verification_token"])
     r = login(client, email)
     assert r.status_code == 200, r.text
+    arm_csrf(client, r.json())
     return {"email": email, **reg, "session": r.json()}
 
 
@@ -98,7 +110,9 @@ def test_full_journey_register_verify_login_me_logout():
     reg = register(client, email)
     assert login(client, email).status_code == 403
     verify(client, reg["verification_token"])
-    assert login(client, email).status_code == 200
+    logged_in = login(client, email)
+    assert logged_in.status_code == 200
+    arm_csrf(client, logged_in.json())
     me = client.get("/api/v1/users/me")
     assert me.status_code == 200 and me.json()["email"] == email
     assert me.json()["memberships"][0]["role"] == "owner"
@@ -144,7 +158,9 @@ def test_invite_accept_and_role_enforcement():
     member_email = _email("invited")
     member_reg = register(member_c, member_email)
     verify(member_c, member_reg["verification_token"])
-    assert login(member_c, member_email).status_code == 200
+    member_login = login(member_c, member_email)
+    assert member_login.status_code == 200
+    arm_csrf(member_c, member_login.json())
     inv = owner_c.post(
         "/api/v1/members/invitations",
         json={"email": member_email, "role": "accountant"},
@@ -160,6 +176,7 @@ def test_invite_accept_and_role_enforcement():
         "/api/v1/auth/tenant", json={"tenant_id": owner["tenant_id"]}
     )
     assert switched.status_code == 200, switched.text
+    arm_csrf(member_c, switched.json())  # rotation issues a fresh CSRF token
     # Accountant can create clients but cannot invite members.
     assert (
         member_c.post("/api/v1/clients", json={"name": "Client X"}).status_code == 201

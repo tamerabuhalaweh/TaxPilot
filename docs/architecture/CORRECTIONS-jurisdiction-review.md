@@ -59,3 +59,19 @@ Minimum JO slice for Sprint 2: catalog + LegalEntity + DRAFT/CONFIRMED obligatio
 
 ## Traceability
 Review items 1–10 → this doc §§0–9 → ADR-003 (unchanged, supporting) → amendment v1.1a (to be folded per §0) → JUR-01 (#28: §§1,2,3,5,7,8) / JUR-02 (#29: §§2,4,6,8) / JUR-03 (#30: §§4,5) / JUR-04 (#31: §§0,6,7,9) → golden plan +18 cases (cases 7,8,15,16 directly cover snapshot/concurrency/migration/flags). Resolved now: specifications. Deferred to implementation PRs: code, migrations, contracts-from-code, executed tests.
+
+## Addendum (2026-10-09) — review follow-up §8: snapshot vs operational status; hash coverage
+
+These refine §§1–2 without changing the approved direction. Normative for JUR-01/02 implementation PRs.
+
+### A. Immutable snapshot coexists with mutable processing status
+Do NOT make the whole execution row insert-only. Separate, in every run record:
+- **Immutable inputs** (write-once at enqueue, never updated): `tax_context_id`, `context_revision`, `context_hash`, `snapshot_version`, full context `snapshot` JSONB (all confirmed values, see B), `dataset_set_hash` + mapping/profile versions, `rule_versions`, `pack_version`, idempotency key. The worker re-verifies these against live rows before executing; mismatch marks the run SUPERSEDED and never executes stale inputs.
+- **Operational state** (mutable through a narrow state machine): `QUEUED → RUNNING → SUCCEEDED | FAILED | CANCELLED`, `attempts`, `claimed_by/claimed_at`, `error/error_class`, timestamps. Transitions only forward (plus `RUNNING → QUEUED` via crash recovery); a static `BEFORE UPDATE` trigger rejects changes to immutable columns.
+- History: supersession chains reference predecessor run IDs; issued reports embed the snapshot and never change.
+
+### B. Snapshot integrity covers all confirmed values
+The `context_hash` is computed over the canonical serialization of EVERY confirmed context value — tenant, client, subject (entity or group + kind), jurisdiction, tax type, regime, obligation profile id + version, registration ids + versions referenced, period, context revision, pack version, confirmation actor/time, and the snapshot format version itself (`snapshot_version`, starting at 1; any canonical-format change bumps it and old hashes remain verifiable under their version). Canonical form: UTF-8 JSON, lexicographic keys, no whitespace, uppercased codes, lowercase UUIDs, ISO dates, plain ints. Hash verifies integrity; it is never an authorization token (tenant/membership/assignment/object checks still required per call).
+
+### C. Branch discipline restated
+PR #32's branch remains untouched. These refinements live here (PR #33) and will be folded into the single master SRS together with the v1.1a amendment at the approved merge step (§0). JUR-01/02 PRs must cite this addendum + §§1–2.

@@ -1,6 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import { PROXY_MAX_RESPONSE_BYTES, bodyTooLarge, filterHeaders } from "../../../../lib/proxy";
-import { edgeClientKey, edgeLoginAllowed, edgeLoginHit, edgeRetryAfterMs } from "../../../../lib/rate-limit";
+import {
+  PROXY_MAX_BODY_BYTES,
+  PROXY_MAX_RESPONSE_BYTES,
+  bodyTooLarge,
+  filterHeaders,
+  readBoundedBody
+} from "../../../../lib/proxy";
 
 /**
  * Same-origin API proxy (Backend-for-Frontend).
@@ -24,26 +29,28 @@ async function forward(req: NextRequest, segments: string[], method: string): Pr
       { status: 413 }
     );
   }
-  // Edge login throttle (P0-B): per observed-peer key, before touching the backend.
-  // The backend keeps authoritative per-email limiting; this tier stops sprays.
-  if (method === "POST" && segments.join("/") === "auth/login") {
-    const key = edgeClientKey(req.headers.get("x-forwarded-for"));
-    const now = Date.now();
-    if (!edgeLoginAllowed(key, now)) {
-      const waitSecs = Math.ceil(edgeRetryAfterMs(key, now) / 1000);
-      return NextResponse.json(
-        { error: { code: "RATE_LIMITED", message: "Too many attempts. Try again later." } },
-        { status: 429, headers: { "Retry-After": String(waitSecs) } }
-      );
-    }
-    edgeLoginHit(key, now);
-  }
+  // No custom per-IP throttle here (R1): without a configured trusted proxy,
+  // X-Forwarded-For is untrusted and absent headers would share one bucket and
+  // lock out unrelated users. Abuse protection is the backend's per-email
+  // limiter plus (production) platform-edge limiting tracked under #36.
   const url = `${backendBase()}/api/v1/${segments.join("/")}${req.nextUrl.search}`;
   const headers = filterHeaders(req.headers.entries());
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
   try {
-    const body = method === "GET" || method === "HEAD" ? undefined : await req.arrayBuffer();
+    let body: ArrayBuffer | undefined;
+    if (method !== "GET" && method !== "HEAD") {
+      // Bounded streaming read (R2): enforced even when Content-Length is
+      // missing or lies. Oversized bodies are rejected here, never forwarded.
+      const read = await readBoundedBody(req.body, PROXY_MAX_BODY_BYTES);
+      if (!read.ok) {
+        return NextResponse.json(
+          { error: { code: "PAYLOAD_TOO_LARGE", message: "Request body exceeds the allowed size." } },
+          { status: 413 }
+        );
+      }
+      body = read.bytes.buffer as ArrayBuffer;
+    }
     const res = await fetch(url, { method, headers, body, signal: controller.signal });
     const buf = await res.arrayBuffer();
     if (buf.byteLength > PROXY_MAX_RESPONSE_BYTES) {

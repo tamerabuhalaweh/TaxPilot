@@ -227,7 +227,9 @@ def test_concurrent_owner_changes_never_empty_ownership():
 # -- P0-B --------------------------------------------------------------------
 def test_shared_bff_ip_does_not_cross_lock_accounts():
     """Two browsers behind one BFF address (TestClient's fixed testclient IP):
-    locking A must not block B, and spoofed forwarding headers change nothing."""
+    locking A must not block B, and spoofed forwarding headers change nothing.
+    Runs 20 hostile attempts (the removed shared bucket's old threshold) to prove
+    no shared counter exists at any volume."""
     _services_or_gate()
     ca, cb = fresh_client(), fresh_client()
     onboard(ca, "lockA")
@@ -235,7 +237,7 @@ def test_shared_bff_ip_does_not_cross_lock_accounts():
     locked_email = _email("victim")
     reg = register(ca, locked_email)
     verify(ca, reg["verification_token"])
-    for _ in range(6):
+    for _ in range(20):
         r = ca.post(
             "/api/v1/auth/login",
             json={"email": locked_email, "password": "wrong password here!"},

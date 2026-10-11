@@ -138,6 +138,7 @@ jobs:
       - name: Build web
         run: npm run build
       - name: Migrate database (browser job needs Sprint 1 tables)
+        working-directory: .
         env:
           DATABASE_URL: postgresql+psycopg://taxpilot:taxpilot@localhost:5432/taxpilot
         run: python db/migrate.py

@@ -1,3 +1,6 @@
+> **STATUS: UNRESOLVED — DEC-11 pending.** No provider selected; the MVP runs provider-free.
+> Governing requirements: `TAXPILOT_MASTER_SRS.md` §8.
+
 # ADR-002 — AI provider (DECISION REQUIRED, blocks AI prod use)
 
 Status: Proposed (SRS v1.1 §14, DEC-11). Owner: Tech Lead + Legal. MVP must work with NO provider configured.

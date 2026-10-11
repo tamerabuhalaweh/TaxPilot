@@ -1,3 +1,11 @@
+> **SUPERSEDED / NON-NORMATIVE — FOLLOW MASTER §6.**
+> This document is preserved as design history. The following statements in it are
+> **REJECTED — do not implement:** global `UNIQUE(context_hash)` (corrected: stable UUID PK +
+> tenant-scoped uniqueness + hash over the full canonical frozen snapshot); `REVOKE UPDATE after
+> first RuleRun` (corrected: write-once ExecutionSnapshot vs append-only run-status transitions);
+> automatic JO/JOD incorporation backfill as verified data (corrected: UNKNOWN default + explicit
+> user confirmation + accounting-only scope). Governing contracts: `TAXPILOT_MASTER_SRS.md` §6 (+§11).
+
 # Jurisdiction ERD + migration design (JUR-01, #28; companion to ADR-003)
 
 ```

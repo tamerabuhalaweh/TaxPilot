@@ -1,3 +1,8 @@
+> **STATUS: CONDITIONAL ON UNIFIED-BASELINE APPROVAL (not yet approved).**
+> Preserved with full reasoning intact. Where this ADR differs from `TAXPILOT_MASTER_SRS.md` §6
+> (snapshot hash coverage, snapshot-vs-status separation, UNKNOWN-safe scope, encryption design),
+> the Master governs. See also `docs/architecture/CORRECTIONS-jurisdiction-review.md`.
+
 # ADR-003 — Multi-jurisdiction domain model and jurisdiction packs
 
 **Status:** Proposed (awaits PO + Tech Lead approval). **Date:** 2026-10-09.

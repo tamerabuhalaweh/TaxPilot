@@ -1,3 +1,9 @@
+> **PROPOSALS SUPERSEDED WHERE THEY CONFLICT — FOLLOW MASTER §§6/11.**
+> Preserved as design history. **REJECTED:** presenting tax-context creation as CONFIRMED without
+> explicit verification (corrected: `NEEDS_CONFIRMATION` gate blocks tax runs until a human confirms).
+> Endpoint shapes here are proposals only; JUR-01/02 implementation stays blocked until the unified
+> baseline is approved. Governing contracts: `TAXPILOT_MASTER_SRS.md` §§6/11.
+
 # OpenAPI jurisdiction proposals (JUR-01/02, #28/#29; versioned `/api/v1`)
 
 Conventions: server-derived tenant (never trust client `tenant_id`); cursor/offset max 100 + allowlisted sort/filter; Idempotency-Key on POST creates; money as strings; UUIDs; errors `{error:{code,message,details,request_id}}`.

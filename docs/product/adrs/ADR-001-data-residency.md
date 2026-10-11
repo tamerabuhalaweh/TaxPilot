@@ -1,3 +1,6 @@
+> **STATUS: UNRESOLVED — DEC-03/DEC-12 pending.** No hosting, region, subprocessor, or transfer
+> decision has been made. Governing requirements: `TAXPILOT_MASTER_SRS.md` §10.
+
 # ADR-001 — Data residency and subprocessors (DECISION REQUIRED, blocks pilot)
 
 Status: Proposed (SRS v1.1 §18, DEC-03/DEC-12). Owner: Tech Lead + Legal. Must be signed before real customer data onboarding.

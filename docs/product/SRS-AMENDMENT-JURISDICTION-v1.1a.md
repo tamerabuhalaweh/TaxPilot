@@ -1,3 +1,7 @@
+> **DEMOTED TO HISTORY — FOLLOW MASTER `TAXPILOT_MASTER_SRS.md` (Appendices C–I).**
+> FR-JUR-001..011 and all amendment content are restated normatively in the unified master with
+> review corrections applied. This file is retained for traceability only; do not implement from it.
+
 # SRS v1.1 Amendment A — Multi-jurisdiction architecture (EP-17, JUR-01..04)
 
 **Parent:** SRS v1.1 PR #15 (`docs/product/TAXPILOT_MASTER_SRS_V1.1.md`, §§1–28 + App. A–D). **This file amends; it does not replace or duplicate v1.1.** Where silent, v1.1 stands (JO MVP, REC-001..005 primary, file-based JoFotara, deterministic-first AI, P0 security). **Branch:** isolated `docs/ep17-jurisdiction-architecture` (never touched PR #15's branch). **Issues:** #27 (EP-17), #28 JUR-01, #29 JUR-02, #30 JUR-03, #31 JUR-04; coordinates #17–#25 (EP-16 Intelligence Engine), #8/#9 (RAG/adapter), #16 (EP-15 JoFotara).

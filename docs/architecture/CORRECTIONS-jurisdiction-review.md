@@ -1,3 +1,9 @@
+> **PROVENANCE, NOT A NORMATIVE SOURCE.** The multi-PR merge sequence this document anticipated
+> has been executed on branch `docs/srs-unified-master` (PRs #15 + #32 + #33 merged in, history
+> preserved; unified baseline proposed in `TAXPILOT_MASTER_SRS.md`). Remaining follow-ups from the
+> later review (snapshot-vs-status wording, full-value hash coverage) are folded into Master §6.
+> Governing contracts: `TAXPILOT_MASTER_SRS.md`.
+
 # Architecture review corrections — PR #32 ten items + directive A1–A8
 
 **Branch:** `docs/arch-corrections-jur-review` (from `main e6b21d0`; PR #15 and PR #32 branches untouched, no force-push).

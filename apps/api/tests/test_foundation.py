@@ -115,6 +115,7 @@ def test_production_config_rejects_dev_defaults():
         database_url="postgresql+psycopg://u:p@db:5432/t",
         redis_url="redis://redis:6379/0",
         cors_allowed_origins=["https://app.example.com"],
+        auth_expose_tokens=False,
     )
     assert ok.environment == "production"
 
@@ -147,6 +148,8 @@ def test_unhandled_errors_use_envelope_without_internals():
 
 
 def test_app_error_codes_map_to_status():
+    from app.errors import _STATUS_BY_CODE
+
     app = create_app()
 
     @app.get("/__teapot")  # type: ignore[misc]
@@ -160,6 +163,19 @@ def test_app_error_codes_map_to_status():
         assert r.json()["error"]["code"] == "TAX_CONTEXT_REQUIRED"
     finally:
         app.router.routes = [rt for rt in app.router.routes if getattr(rt, "path", "") != "/__teapot"]
+    # Every code raised anywhere in the app must map to an explicit status:
+    # unmapped codes silently become 500 (caught live on OWNER_PROTECTED).
+    import pathlib
+    import re
+
+    root = pathlib.Path(__file__).resolve().parents[3]
+    raised = set()
+    for path in list((root / "apps" / "api" / "app").rglob("*.py")) + list(
+        (root / "apps" / "api" / "worker").rglob("*.py")
+    ):
+        raised.update(re.findall(r'AppError\("([A-Z_]+)"', path.read_text(encoding="utf-8")))
+    unmapped = raised - set(_STATUS_BY_CODE)
+    assert not unmapped, f"AppError codes without status mapping: {unmapped}"
 
 
 def test_redaction():
@@ -294,6 +310,7 @@ def test_production_worker_use_blocked_until_durability_approved(monkeypatch):  
     monkeypatch.setenv("ENVIRONMENT", "production")
     monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://u:p@db:5432/t")
     monkeypatch.setenv("REDIS_URL", "redis://redis:6379/0")
+    monkeypatch.setenv("AUTH_EXPOSE_TOKENS", "false")
     monkeypatch.delenv("JOBS_DURABILITY_APPROVED", raising=False)
     with pytest.raises(RuntimeError, match="OPS-JOBS-01"):
         recover_and_serve()
@@ -303,6 +320,7 @@ def test_production_worker_use_blocked_until_durability_approved(monkeypatch):  
         database_url="postgresql+psycopg://u:p@db:5432/t",
         redis_url="redis://redis:6379/0",
         cors_allowed_origins=["https://app.example.com"],
+        auth_expose_tokens=False,
         jobs_durability_approved=True,
     )
     assert approved.jobs_durability_approved is True

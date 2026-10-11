@@ -13,8 +13,10 @@ from .db import create_db_engine
 from .deps import settings_singleton
 from .errors import AppError, app_error_handler, unhandled_handler
 from .logging_setup import setup_logging
-from .middleware import CorrelationIdMiddleware
+from .middleware import BodyLimitMiddleware, CorrelationIdMiddleware
+from .routers.auth import router as auth_router
 from .routers.health import router as health_router
+from .routers.workspace import router as workspace_router
 
 log = logging.getLogger(__name__)
 
@@ -37,19 +39,24 @@ def create_app() -> FastAPI:
 
     app = FastAPI(title="TaxPilot API", version="0.1.0", lifespan=_lifespan)
     app.add_middleware(CorrelationIdMiddleware)
-    # Explicit allowlist only; credentials intentionally disabled (no cookie auth in Sprint 0).
+    app.add_middleware(BodyLimitMiddleware, max_bytes=settings.max_body_bytes)
+    # Explicit allowlist only; credentials stay disabled (same-origin cookie
+    # sessions need no CORS). X-CSRF-Token must be readable by the BFF, which is
+    # same-origin too, so no exposed-headers entry is required.
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_allowed_origins,
         allow_credentials=False,
         allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
-        allow_headers=["Content-Type", "Authorization", "X-Request-ID", "Idempotency-Key"],
+        allow_headers=["Content-Type", "Authorization", "X-Request-ID", "X-CSRF-Token", "Idempotency-Key"],
         max_age=600,
     )
     app.add_exception_handler(AppError, app_error_handler)
     app.add_exception_handler(Exception, unhandled_handler)
 
     app.include_router(health_router, prefix=settings.api_v1_prefix)
+    app.include_router(auth_router, prefix=settings.api_v1_prefix)
+    app.include_router(workspace_router, prefix=settings.api_v1_prefix)
 
     @app.get("/health", include_in_schema=False)
     def _root_health() -> dict[str, str]:

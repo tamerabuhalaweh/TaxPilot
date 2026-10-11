@@ -53,6 +53,7 @@ def migrate(
             "CREATE TABLE IF NOT EXISTS schema_migrations "
             "(version TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())"
         )
+        conn.commit()  # bootstrap survives even if a later migration statement fails
         done = {
             r[0]
             for r in conn.execute("SELECT version FROM schema_migrations").fetchall()

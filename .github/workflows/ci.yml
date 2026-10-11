@@ -117,6 +117,12 @@ jobs:
         options: >-
           --health-cmd "pg_isready -U taxpilot"
           --health-interval 5s --health-timeout 3s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 3s --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -137,6 +143,11 @@ jobs:
           npx playwright install --with-deps chromium
       - name: Build web
         run: npm run build
+      - name: Migrate database (browser job needs Sprint 1 tables)
+        working-directory: .
+        env:
+          DATABASE_URL: postgresql+psycopg://taxpilot:taxpilot@localhost:5432/taxpilot
+        run: python db/migrate.py
       - name: Browser journey (API + web on loopback, proxy exercised end to end)
         env:
           PYTHONPATH: ../api

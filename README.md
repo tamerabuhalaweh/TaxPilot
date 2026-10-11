@@ -2,9 +2,9 @@
 
 AI-assisted tax reconciliation and financial review platform for Jordanian accounting firms.
 
-**Authoritative spec:** [`docs/product/TAXPILOT_MASTER_SRS_V1.1.md`](docs/product/TAXPILOT_MASTER_SRS_V1.1.md) (SRS v1.1, reconciliation-first baseline — pending PO approval via PR).
+**Authoritative spec:** [`docs/product/TAXPILOT_MASTER_SRS.md`](docs/product/TAXPILOT_MASTER_SRS.md) (v2.0 unified draft — single normative baseline, pending PO approval via PR).
 
-**Superseded:** SRS v1.0 `.docx` retained under `docs/product/superseded/` for change history. Do not build new scope from v1.0 alone.
+**History:** SRS v1.1 file + v1.1a jurisdiction amendment + architecture corrections retained as traceability (see §0.1 of the unified master). Superseded SRS v1.0 `.docx` under `docs/product/superseded/`. Do not build scope from superseded documents alone.
 
 ## Product promise (v1.1)
 Sign in → Select/create client → Start tax review → Upload Sales Register + JoFotara Export + GL → Confirm mappings → Run reconciliation (REC-001..005) → Investigate → Record decisions → Bilingual PDF/XLSX report.

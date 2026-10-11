@@ -13,3 +13,5 @@ node_modules/
 Thumbs.db
 # Temp
 *.tmp
+
+tsconfig.tsbuildinfo

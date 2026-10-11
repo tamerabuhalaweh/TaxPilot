@@ -298,4 +298,3 @@ def switch_tenant(
         conn.close()
     _set_session_cookie(response, token, csrf_token, settings)
     return _login_out(full_user, memberships, active_id=body.tenant_id, csrf_token=csrf_token)
-

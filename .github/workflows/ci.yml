@@ -137,6 +137,10 @@ jobs:
           npx playwright install --with-deps chromium
       - name: Build web
         run: npm run build
+      - name: Migrate database (browser job needs Sprint 1 tables)
+        env:
+          DATABASE_URL: postgresql+psycopg://taxpilot:taxpilot@localhost:5432/taxpilot
+        run: python db/migrate.py
       - name: Browser journey (API + web on loopback, proxy exercised end to end)
         env:
           PYTHONPATH: ../api

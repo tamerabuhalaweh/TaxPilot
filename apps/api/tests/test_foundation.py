@@ -115,6 +115,7 @@ def test_production_config_rejects_dev_defaults():
         database_url="postgresql+psycopg://u:p@db:5432/t",
         redis_url="redis://redis:6379/0",
         cors_allowed_origins=["https://app.example.com"],
+        auth_expose_tokens=False,
     )
     assert ok.environment == "production"
 
@@ -294,6 +295,7 @@ def test_production_worker_use_blocked_until_durability_approved(monkeypatch):  
     monkeypatch.setenv("ENVIRONMENT", "production")
     monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://u:p@db:5432/t")
     monkeypatch.setenv("REDIS_URL", "redis://redis:6379/0")
+    monkeypatch.setenv("AUTH_EXPOSE_TOKENS", "false")
     monkeypatch.delenv("JOBS_DURABILITY_APPROVED", raising=False)
     with pytest.raises(RuntimeError, match="OPS-JOBS-01"):
         recover_and_serve()
@@ -303,6 +305,7 @@ def test_production_worker_use_blocked_until_durability_approved(monkeypatch):  
         database_url="postgresql+psycopg://u:p@db:5432/t",
         redis_url="redis://redis:6379/0",
         cors_allowed_origins=["https://app.example.com"],
+        auth_expose_tokens=False,
         jobs_durability_approved=True,
     )
     assert approved.jobs_durability_approved is True

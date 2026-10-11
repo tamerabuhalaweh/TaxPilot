@@ -1,0 +1,102 @@
+"""FastAPI application factory. Versioned under /api/v1. No tax logic in Sprint 0."""
+
+import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import text
+
+from .config import get_settings
+from .db import create_db_engine
+from .deps import settings_singleton
+from .errors import AppError, app_error_handler, unhandled_handler
+from .logging_setup import setup_logging
+from .middleware import CorrelationIdMiddleware
+from .routers.health import router as health_router
+
+log = logging.getLogger(__name__)
+
+
+def create_app() -> FastAPI:
+    settings = settings_singleton()
+    setup_logging(settings.log_level)
+
+    @asynccontextmanager
+    async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
+        # Lazily created engine with bounded connect timeout; no probing at startup
+        # so a down dependency delays readiness, never startup itself.
+        engine = create_db_engine(settings, connect_timeout=settings.probe_timeout_seconds)
+        app.state.engine = engine
+        app.state.settings = settings
+        log.info("startup environment=%s queue_backend=%s", settings.environment, settings.queue_backend)
+        yield
+        engine.dispose()
+        log.info("shutdown engine disposed")
+
+    app = FastAPI(title="TaxPilot API", version="0.1.0", lifespan=_lifespan)
+    app.add_middleware(CorrelationIdMiddleware)
+    # Explicit allowlist only; credentials intentionally disabled (no cookie auth in Sprint 0).
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.cors_allowed_origins,
+        allow_credentials=False,
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+        allow_headers=["Content-Type", "Authorization", "X-Request-ID", "Idempotency-Key"],
+        max_age=600,
+    )
+    app.add_exception_handler(AppError, app_error_handler)
+    app.add_exception_handler(Exception, unhandled_handler)
+
+    app.include_router(health_router, prefix=settings.api_v1_prefix)
+
+    @app.get("/health", include_in_schema=False)
+    def _root_health() -> dict[str, str]:
+        return {"status": "ok"}
+
+    return app
+
+
+def probe_database(app: FastAPI) -> bool:
+    """Bounded liveness probe of the configured database. Never raises, never leaks DSN."""
+    try:
+        settings = app.state.settings
+    except AttributeError:
+        settings = get_settings()
+    try:
+        engine = getattr(app.state, "engine", None) or create_db_engine(
+            settings, connect_timeout=settings.probe_timeout_seconds
+        )
+        created_here = not hasattr(app.state, "engine")
+        try:
+            with engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
+            return True
+        finally:
+            if created_here:
+                engine.dispose()
+    except Exception:
+        log.warning("database probe failed", exc_info=False)
+        return False
+
+
+def probe_queue(app: FastAPI) -> str:
+    """Queue readiness reflecting the actual configured backend. Never raises."""
+    try:
+        settings = app.state.settings
+    except AttributeError:
+        settings = get_settings()
+    if settings.queue_backend == "memory":
+        return "memory-fallback"
+    try:
+        from worker.jobs import RedisBackend
+
+        RedisBackend(settings.redis_url, socket_timeout=settings.probe_timeout_seconds)
+        return "up"
+    except Exception:
+        log.warning("queue probe failed", exc_info=False)
+        return "down"
+
+
+app = create_app()

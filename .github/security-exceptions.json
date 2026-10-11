@@ -1,0 +1,5 @@
+{
+  "_comment": "Explicit, expiring security exceptions. Empty means: fail on any high/critical finding. Entries require PO + Security approval with expiry. NEVER add a wildcard.",
+  "npm": [],
+  "pip": []
+}

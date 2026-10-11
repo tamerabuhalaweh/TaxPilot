@@ -29,6 +29,15 @@ class Settings(BaseSettings):
     worker_recover_interval_seconds: float = 30.0
     jobs_durability_approved: bool = False
 
+    # Sprint 1 identity (FR-ID-001..009)
+    password_min_length: int = 12
+    session_ttl_hours: int = 24
+    verification_ttl_hours: int = 48
+    invite_ttl_hours: int = 72
+    login_max_attempts: int = 5
+    login_window_seconds: int = 900
+    auth_expose_tokens: bool = True  # dev-only convenience; forced False in production
+
     @model_validator(mode="after")
     def _guard_production(self) -> "Settings":
         if self.environment == "production":
@@ -38,9 +47,15 @@ class Settings(BaseSettings):
                 raise ValueError("production requires explicit DATABASE_URL and REDIS_URL (no dev defaults)")
             if not self.cors_allowed_origins:
                 raise ValueError("production requires explicit cors_allowed_origins")
+            if self.auth_expose_tokens:
+                raise ValueError("production refuses auth_expose_tokens (verification/invite tokens)")
         if self.queue_backend not in ("redis", "memory"):
             raise ValueError("queue_backend must be 'redis' or 'memory'")
         return self
+
+    @property
+    def cookie_secure(self) -> bool:
+        return self.environment == "production"
 
 
 def get_settings() -> Settings:

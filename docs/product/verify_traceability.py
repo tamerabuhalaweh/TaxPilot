@@ -1,11 +1,10 @@
-"""Extract requirement/test/UX identifiers from SRS source documents.
+"""Identifier-presence guard for SRS traceability (NOT a semantic proof).
 
-Usage: python docs/product/verify_traceability.py [--report]
-- Default: exit 0 with counts per file.
-- --report: also writes docs/product/TRACEABILITY-REPORT.md listing every ID,
-  where it appears in the unified master, and the disposition of any absence.
-- Exit 1 if any ID present in a source doc is absent from the master WITHOUT an
-  explicit disposition row in the master's Appendix C tables.
+Compares requirement/test/UX identifiers extracted from the source documents
+(v1.1, v1.1a) against the unified master and fails on any absence. Presence of
+an identifier does NOT prove its acceptance criteria, priorities, or statuses
+were preserved losslessly — manual matrix review (Appendices C–I) remains
+necessary. Run: python docs/product/verify_traceability.py [--report].
 """
 import re
 import sys

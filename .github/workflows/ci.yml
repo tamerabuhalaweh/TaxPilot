@@ -5,6 +5,18 @@ on:
     branches: [main]
 
 jobs:
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Requirements identifier-presence guard (stdlib only)
+        run: |
+          python docs/product/verify_traceability.py --report
+          git diff --exit-code -- docs/product/TRACEABILITY-REPORT.md
+
   backend:
     runs-on: ubuntu-latest
     steps:

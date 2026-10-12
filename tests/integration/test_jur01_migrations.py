@@ -63,15 +63,13 @@ def _count(table: str) -> int:
 
 
 def _reset_jur() -> None:
-    # Full unwind of 0004 (tables + clients candidate key + ledger row) so the
-    # next migrate() rebuilds current DDL from scratch — never a stale mix of
-    # old tables with a fresh ledger row.
+    # R1 (PR #41 review): unwind 0004 tables + ledger row ONLY. The clients
+    # candidate key is NEVER dropped here (no CASCADE against it): dropping
+    # the jur tables removes the dependent FKs while the key persists, and the
+    # next migrate() exercises the verify-only path on the surviving key.
     with psycopg.connect(_to_libpq(URL), connect_timeout=10) as conn:
         for table in JUR_TABLES:
             conn.execute(f"DROP TABLE IF EXISTS {table} CASCADE")
-        conn.execute(
-            "ALTER TABLE clients DROP CONSTRAINT IF EXISTS clients_tenant_id_key CASCADE"
-        )
         conn.execute("DELETE FROM schema_migrations WHERE version = '0004'")
         conn.commit()
 
@@ -99,15 +97,17 @@ def _tenant_and_client(conn, tag: str = "t"):  # type: ignore[no-untyped-def]
 
 
 def test_1_fresh_install_applies_all_versions_with_seeds():
+    # R4: GENUINE fresh installation — the entire schema is destroyed first, so
+    # this proves 0001..0004 build a working database from nothing (not merely
+    # that 0004 layers onto surviving Sprint 1 tables).
     url = _db_or_skip()
     with psycopg.connect(_to_libpq(url), connect_timeout=10) as conn:
-        for table in JUR_TABLES:
-            conn.execute(f"DROP TABLE IF EXISTS {table} CASCADE")
-        conn.execute("DELETE FROM schema_migrations WHERE version = '0004'")
+        conn.execute("DROP SCHEMA public CASCADE")
+        conn.execute("CREATE SCHEMA public")
         conn.commit()
     try:
         applied = migrate(url)
-        assert "0004" in applied
+        assert applied == ["0001", "0002", "0003", "0004"]
         rows = _exec(
             "SELECT code, availability FROM jurisdiction_catalog ORDER BY code"
         )
@@ -122,6 +122,14 @@ def test_1_fresh_install_applies_all_versions_with_seeds():
         assert (
             caps["rules"] == [] and caps["tax_types"] == []
         )  # ACTIVE catalog, zero executables
+        # R4: every applied version's recorded hash matches the approved manifest.
+        from db.migrate import load_checksums
+
+        manifest = load_checksums()
+        recorded = _exec("SELECT version, sha256 FROM schema_migrations")
+        assert {v for v, _ in recorded} == {"0001", "0002", "0003", "0004"}
+        for version, digest in recorded:
+            assert manifest[version] == digest, version
     finally:
         migrate(url)
 
@@ -326,6 +334,56 @@ def test_7_confirmed_context_freeze(clean_jur):
                     (xid,),
                 )
         conn.rollback()
+        # R2: even a no-op write to a CONFIRMED row is rejected.
+        with pytest.raises(Exception, match="immutable"):
+            with conn.transaction():
+                conn.execute(
+                    "UPDATE tax_contexts SET period_end = period_end WHERE id = %s",
+                    (xid,),
+                )
+        conn.rollback()
+        # R2: identity and attribution are frozen from birth, even pre-confirmation.
+        yid = str(uuid.uuid4())
+        conn.execute(
+            "INSERT INTO tax_contexts (id, tenant_id, client_id, subject_kind,"
+            " subject_entity_id, jurisdiction_code, tax_type_code, period_start,"
+            " period_end, confirmation_status) VALUES (%s,%s,%s,'LEGAL_ENTITY',%s,'JO',"
+            " 'ACCOUNTING_ONLY','2026-01-01','2026-12-31','DRAFT')",
+            (yid, tid, cid, eid),
+        )
+        conn.commit()
+        with pytest.raises(Exception, match="immutable"):
+            with conn.transaction():
+                conn.execute(
+                    "UPDATE tax_contexts SET client_id = %s WHERE id = %s",
+                    (tid, yid),
+                )
+        conn.rollback()
+        with pytest.raises(Exception, match="immutable"):
+            with conn.transaction():
+                conn.execute(
+                    "UPDATE tax_contexts SET confirmed_by = %s WHERE id = %s",
+                    (tid, yid),
+                )
+        conn.rollback()
+        with pytest.raises(Exception, match="immutable"):
+            with conn.transaction():
+                conn.execute(
+                    "UPDATE tax_contexts SET created_at = now() WHERE id = %s",
+                    (yid,),
+                )
+        conn.rollback()
+        # R2: the privileged confirmation transition carries actor/time only —
+        # smuggling a content change alongside confirmation is rejected.
+        with pytest.raises(Exception, match="immutable"):
+            with conn.transaction():
+                conn.execute(
+                    "UPDATE tax_contexts SET confirmation_status = 'CONFIRMED',"
+                    " confirmed_by = %s, confirmed_at = now(), period_end = '2026-06-30'"
+                    " WHERE id = %s",
+                    (tid, yid),
+                )
+        conn.rollback()
         # ...while new revisions insert cleanly.
         conn.execute(
             "INSERT INTO tax_contexts (id, tenant_id, client_id, subject_kind,"
@@ -376,6 +434,46 @@ def test_8_crypto_column_constraints(clean_jur):
                     " authority_code, registration_kind, number_ciphertext, number_nonce, key_id)"
                     " VALUES (%s,%s,%s,'JO-ISTD','VAT',%s,%s,'k1')",
                     (str(uuid.uuid4()), tid, oid, b"\x01\x02", b"\x01\x02"),
+                )
+        conn.rollback()
+        # R3: nonce alone (no ciphertext) fails bidirectionally...
+        with pytest.raises(Exception):
+            with conn.transaction():
+                conn.execute(
+                    "INSERT INTO tax_registrations (id, tenant_id, obligation_profile_id,"
+                    " authority_code, registration_kind, number_nonce)"
+                    " VALUES (%s,%s,%s,'JO-ISTD','VAT',%s)",
+                    (str(uuid.uuid4()), tid, oid, b"\x01" * 12),
+                )
+        conn.rollback()
+        # R3: ...key metadata alone fails...
+        with pytest.raises(Exception):
+            with conn.transaction():
+                conn.execute(
+                    "INSERT INTO tax_registrations (id, tenant_id, obligation_profile_id,"
+                    " authority_code, registration_kind, key_id)"
+                    " VALUES (%s,%s,%s,'JO-ISTD','VAT','k-orphan')",
+                    (str(uuid.uuid4()), tid, oid),
+                )
+        conn.rollback()
+        # R3: ...partial identifier alone fails...
+        with pytest.raises(Exception):
+            with conn.transaction():
+                conn.execute(
+                    "INSERT INTO tax_registrations (id, tenant_id, obligation_profile_id,"
+                    " authority_code, registration_kind, number_last4)"
+                    " VALUES (%s,%s,%s,'JO-ISTD','VAT','1234')",
+                    (str(uuid.uuid4()), tid, oid),
+                )
+        conn.rollback()
+        # R3: ...ciphertext without its key id fails...
+        with pytest.raises(Exception):
+            with conn.transaction():
+                conn.execute(
+                    "INSERT INTO tax_registrations (id, tenant_id, obligation_profile_id,"
+                    " authority_code, registration_kind, number_ciphertext, number_nonce)"
+                    " VALUES (%s,%s,%s,'JO-ISTD','VAT',%s,%s)",
+                    (str(uuid.uuid4()), tid, oid, b"\x00" * 32, b"\x01" * 12),
                 )
         conn.rollback()
         # ...valid 12-byte nonce + key passes, last4 is separate plaintext.
@@ -466,3 +564,171 @@ def test_12_schema_matches_definitions():
         assert_schema_matches(engine)
     finally:
         engine.dispose()
+
+
+def _constraint_names(conn) -> set:  # type: ignore[no-untyped-def]
+    rows = conn.execute(
+        "SELECT c.conname FROM pg_constraint c "
+        "JOIN pg_class t ON t.oid = c.conrelid "
+        "WHERE t.relname IN ('clients','legal_entities','tax_obligation_profiles',"
+        "'tax_registrations','tax_contexts')"
+    ).fetchall()
+    return {r[0] for r in rows}
+
+
+def test_13_rerun_without_ledger_row_preserves_key_and_constraints(clean_jur):
+    # R1: re-applying 0004 against an existing schema with the ledger entry
+    # deliberately missing must VERIFY (never drop) the clients candidate key,
+    # leaving tenant isolation, same-client bindings, and every FK intact.
+    url = _db_or_skip()
+    assert migrate(url) == ["0004"]
+    import psycopg as _pg
+
+    with _pg.connect(_to_libpq(url), connect_timeout=10) as conn:
+        tid, cid = _tenant_and_client(conn, "r1keep")
+        eid = _entity(conn, tid, cid)
+        conn.commit()
+        before = _constraint_names(conn)
+        assert "clients_tenant_id_key" in before
+        assert "legal_entities_tenant_client_fk" in before
+        # Simulate a lost ledger entry: tables + key survive, history does not.
+        conn.execute("DELETE FROM schema_migrations WHERE version = '0004'")
+        conn.commit()
+    assert migrate(url) == ["0004"]
+    with _pg.connect(_to_libpq(url), connect_timeout=10) as conn:
+        # Nothing was removed or renamed by the rerun.
+        assert _constraint_names(conn) == before
+        # Tenant isolation still enforced through the surviving key.
+        other_tid, _ = _tenant_and_client(conn, "r1other")
+        with pytest.raises(Exception):
+            with conn.transaction():
+                conn.execute(
+                    "INSERT INTO legal_entities (id, tenant_id, client_id, legal_name,"
+                    " incorporation_country_code, base_currency)"
+                    " VALUES (%s,%s,%s,'X','JO','JOD')",
+                    (str(uuid.uuid4()), other_tid, cid),
+                )
+        conn.rollback()
+        # Same-client binding still enforced.
+        with pytest.raises(Exception):
+            with conn.transaction():
+                conn.execute(
+                    "INSERT INTO tax_obligation_profiles (id, tenant_id, client_id,"
+                    " legal_entity_id, jurisdiction_code, tax_type_code, valid_from)"
+                    " VALUES (%s,%s,%s,%s,'JO','VAT','2026-01-01')",
+                    (str(uuid.uuid4()), tid, cid, eid),
+                )
+                conn.execute(
+                    "INSERT INTO tax_contexts (id, tenant_id, client_id, subject_kind,"
+                    " subject_entity_id, obligation_profile_id, jurisdiction_code,"
+                    " tax_type_code, period_start, period_end, confirmation_status)"
+                    " VALUES (%s,%s,%s,'LEGAL_ENTITY',%s,"
+                    " (SELECT id FROM tax_obligation_profiles WHERE client_id = %s LIMIT 1),"
+                    " 'JO','VAT','2026-01-01','2026-12-31','DRAFT')",
+                    (str(uuid.uuid4()), tid, str(uuid.uuid4()), eid, cid),
+                )
+        conn.rollback()
+    # Fail-closed: a conflicting key definition under the same name refuses.
+    with _pg.connect(_to_libpq(url), connect_timeout=10) as conn:
+        conn.execute(
+            "ALTER TABLE clients RENAME CONSTRAINT clients_tenant_id_key TO zz_tmp_key"
+        )
+        conn.execute(
+            "ALTER TABLE clients ADD CONSTRAINT clients_tenant_id_key UNIQUE (id)"
+        )
+        conn.execute("DELETE FROM schema_migrations WHERE version = '0004'")
+        conn.commit()
+    try:
+        with pytest.raises(Exception, match="unexpected definition"):
+            migrate(url)
+    finally:
+        with _pg.connect(_to_libpq(url), connect_timeout=10) as conn:
+            conn.execute("ALTER TABLE clients DROP CONSTRAINT clients_tenant_id_key")
+            conn.execute(
+                "ALTER TABLE clients RENAME CONSTRAINT zz_tmp_key TO clients_tenant_id_key"
+            )
+            conn.commit()
+    assert migrate(url) == ["0004"]
+
+
+def test_14_concurrent_runners_single_pending_winner(clean_jur):
+    # R4: several runners racing to apply a genuinely PENDING 0004 must
+    # serialize on the advisory lock — exactly one applies, the rest observe.
+    url = _db_or_skip()
+    assert migrate(url) == ["0004"]
+    import psycopg as _pg
+
+    with _pg.connect(_to_libpq(url), connect_timeout=10) as conn:
+        for table in JUR_TABLES:
+            conn.execute(f"DROP TABLE IF EXISTS {table} CASCADE")
+        conn.execute("DELETE FROM schema_migrations WHERE version = '0004'")
+        conn.commit()
+    results: list = []
+    errors: list = []
+
+    def run() -> None:
+        try:
+            results.append(migrate(url))
+        except Exception as exc:  # noqa: BLE001 - collected and asserted below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=run) for _ in range(6)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=180)
+    assert not errors, errors
+    assert len(results) == 6
+    assert sorted(v for r in results for v in r) == ["0004"]
+    assert (
+        _exec("SELECT COUNT(*) FROM schema_migrations WHERE version = '0004'")[0][0]
+        == 1
+    )
+    assert _exec("SELECT COUNT(*) FROM jurisdiction_catalog")[0][0] == 3
+
+
+def test_15_later_failure_keeps_earlier_version_and_reruns_clean(tmp_path):  # type: ignore[no-untyped-def]
+    # R4: per-version atomicity — a broken later migration aborts its OWN
+    # version only; earlier versions in the same run stay committed, and a
+    # fixed rerun applies exactly the remainder.
+    url = _db_or_skip()
+    import hashlib as _hashlib
+    import psycopg as _pg
+
+    def _manifest(*names: str) -> None:
+        (tmp_path / "CHECKSUMS").write_text(
+            "".join(
+                f"{n[:4]}  {_hashlib.sha256((tmp_path / n).read_bytes()).hexdigest()}  {n}\n"
+                for n in names
+            ),
+            encoding="utf-8",
+        )
+
+    (tmp_path / "0090_good.sql").write_text(
+        "CREATE TABLE probe_r4 (id INTEGER PRIMARY KEY);\nINSERT INTO probe_r4 VALUES (1);",
+        encoding="utf-8",
+    )
+    (tmp_path / "0091_broken.sql").write_text(
+        "THIS IS NOT VALID SQL;", encoding="utf-8"
+    )
+    _manifest("0090_good.sql", "0091_broken.sql")
+    with pytest.raises(Exception):
+        migrate(url, versions_dir=tmp_path)
+    with _pg.connect(_to_libpq(url), connect_timeout=10) as conn:
+        versions = {
+            r[0]
+            for r in conn.execute("SELECT version FROM schema_migrations").fetchall()
+        }
+        assert "0090" in versions and "0091" not in versions
+        assert conn.execute("SELECT COUNT(*) FROM probe_r4").fetchone()[0] == 1
+        conn.commit()
+    (tmp_path / "0091_broken.sql").write_text(
+        "CREATE TABLE probe_r4b (id INTEGER PRIMARY KEY);", encoding="utf-8"
+    )
+    _manifest("0090_good.sql", "0091_broken.sql")
+    assert migrate(url, versions_dir=tmp_path) == ["0091"]
+    with _pg.connect(_to_libpq(url), connect_timeout=10) as conn:
+        conn.execute("DROP TABLE IF EXISTS probe_r4")
+        conn.execute("DROP TABLE IF EXISTS probe_r4b")
+        conn.execute("DELETE FROM schema_migrations WHERE version IN ('0090','0091')")
+        conn.commit()

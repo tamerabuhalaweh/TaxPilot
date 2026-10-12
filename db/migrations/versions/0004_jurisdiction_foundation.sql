@@ -7,10 +7,42 @@
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 -- Candidate key the composite tenant-scoped FKs below must reference.
--- DROP-then-ADD (CASCADE drops dependents that this same file recreates) keeps
--- the migration re-runnable for test resets; production applies once via ledger.
-ALTER TABLE clients DROP CONSTRAINT IF EXISTS clients_tenant_id_key CASCADE;
-ALTER TABLE clients ADD CONSTRAINT clients_tenant_id_key UNIQUE (tenant_id, id);
+-- R1 (PR #41 review, HOLD-MERGE fix): VERIFY-ONLY, never drop. An earlier draft
+-- used DROP CONSTRAINT ... CASCADE, which would silently remove the dependent
+-- FKs this same file creates (legal_entities, tax_obligation_profiles,
+-- tax_contexts, tax_registrations) and destroy tenant isolation on rerun. This
+-- block ADDS the key only when absent; when present it verifies the exact
+-- definition and FAILS CLOSED on any mismatch (refuses to modify or replace).
+DO $$
+DECLARE
+  _conoid OID;
+  _contype CHAR;
+  _cols TEXT;
+BEGIN
+  SELECT c.oid INTO _conoid
+  FROM pg_constraint c
+  JOIN pg_class t ON t.oid = c.conrelid
+  JOIN pg_namespace n ON n.oid = t.relnamespace
+  WHERE c.conname = 'clients_tenant_id_key'
+    AND t.relname = 'clients'
+    AND n.nspname = current_schema();
+  IF _conoid IS NULL THEN
+    ALTER TABLE clients
+      ADD CONSTRAINT clients_tenant_id_key UNIQUE (tenant_id, id);
+  ELSE
+    SELECT c.contype INTO _contype FROM pg_constraint c WHERE c.oid = _conoid;
+    SELECT string_agg(a.attname, ',' ORDER BY u.ord) INTO _cols
+    FROM pg_constraint c
+    JOIN LATERAL unnest(c.conkey) WITH ORDINALITY AS u(attnum, ord) ON TRUE
+    JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = u.attnum
+    WHERE c.oid = _conoid;
+    IF _contype <> 'u' OR _cols IS DISTINCT FROM 'tenant_id,id' THEN
+      RAISE EXCEPTION
+        'clients_tenant_id_key exists with unexpected definition (type %, columns %); refusing to modify or replace',
+        _contype, _cols;
+    END IF;
+  END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS jurisdiction_catalog (
   code TEXT PRIMARY KEY,
@@ -109,12 +141,23 @@ CREATE TABLE IF NOT EXISTS tax_registrations (
   CONSTRAINT registration_tenant_key UNIQUE (tenant_id, id),
   CONSTRAINT registration_obligation_fk
     FOREIGN KEY (tenant_id, obligation_profile_id) REFERENCES tax_obligation_profiles (tenant_id, id),
-  -- Ciphertext model (Master §6): nonce present and exactly 12 bytes whenever a
-  -- ciphertext exists; key id travels with the value; NULL ciphertext allowed
-  -- ONLY where collection is deliberately disabled (fail-closed at the API).
-  CONSTRAINT registration_crypto CHECK (
-    number_ciphertext IS NULL
-    OR (number_nonce IS NOT NULL AND octet_length(number_nonce) = 12 AND key_id IS NOT NULL)
+  -- Ciphertext model (Master §6): R3 (PR #41 review, HOLD-MERGE fix) enforces
+  -- complete BIDIRECTIONAL co-presence. Ciphertext and nonce arrive and leave
+  -- together (nonce exactly 12 bytes); key metadata and partial identifiers
+  -- must never exist without the encrypted identifier they describe, and an
+  -- identifier must always travel with its key id. NULL ciphertext allowed
+  -- ONLY where collection is deliberately disabled (fail-closed at the API;
+  -- identifier collection stays disabled until PR-B implements encryption).
+  CONSTRAINT registration_crypto_shape CHECK (
+    (number_ciphertext IS NULL AND number_nonce IS NULL)
+    OR (number_ciphertext IS NOT NULL AND number_nonce IS NOT NULL
+        AND octet_length(number_nonce) = 12)
+  ),
+  CONSTRAINT registration_key_co_presence CHECK (
+    (key_id IS NULL) = (number_ciphertext IS NULL)
+  ),
+  CONSTRAINT registration_last4_requires_ciphertext CHECK (
+    number_last4 IS NULL OR number_ciphertext IS NOT NULL
   )
 );
 CREATE INDEX IF NOT EXISTS registration_tenant_obligation_idx
@@ -166,28 +209,56 @@ CREATE INDEX IF NOT EXISTS context_tenant_client_idx
   ON tax_contexts (tenant_id, client_id, jurisdiction_code, period_start);
 
 -- Confirmed-context freeze guard (REJECTED alternative: dynamic per-row REVOKE).
--- A CONFIRMED row's frozen columns can never change in place; new revisions are
--- INSERTs. Operational status lives in future run tables, not here.
+-- R2 (PR #41 review, HOLD-MERGE fix): CONFIRMED rows reject ALL updates in
+-- place; new revisions are INSERTs. Identity and attribution (id, tenant_id,
+-- client_id, subject, obligation, created_at, confirmed_by/at) are frozen from
+-- birth: pre-confirmation edits may change only working fields, and the sole
+-- privileged transition is DRAFT/NEEDS_CONFIRMATION -> CONFIRMED carrying the
+-- confirmation actor/time. Operational status lives in future run tables.
 CREATE OR REPLACE FUNCTION tax_context_freeze_guard() RETURNS trigger AS $$
 BEGIN
-  IF OLD.confirmation_status = 'CONFIRMED' AND (
-    NEW.subject_kind IS DISTINCT FROM OLD.subject_kind
-    OR NEW.subject_entity_id IS DISTINCT FROM OLD.subject_entity_id
-    OR NEW.subject_group_id IS DISTINCT FROM OLD.subject_group_id
-    OR NEW.jurisdiction_code IS DISTINCT FROM OLD.jurisdiction_code
-    OR NEW.tax_type_code IS DISTINCT FROM OLD.tax_type_code
-    OR NEW.regime_code IS DISTINCT FROM OLD.regime_code
-    OR NEW.obligation_profile_id IS DISTINCT FROM OLD.obligation_profile_id
-    OR NEW.profile_version IS DISTINCT FROM OLD.profile_version
-    OR NEW.period_start IS DISTINCT FROM OLD.period_start
-    OR NEW.period_end IS DISTINCT FROM OLD.period_end
-    OR NEW.pack_version IS DISTINCT FROM OLD.pack_version
-    OR NEW.snapshot IS DISTINCT FROM OLD.snapshot
-    OR NEW.context_hash IS DISTINCT FROM OLD.context_hash
-    OR NEW.context_revision IS DISTINCT FROM OLD.context_revision
-    OR NEW.confirmation_status IS DISTINCT FROM OLD.confirmation_status
-  ) THEN
-    RAISE EXCEPTION 'tax_context % is CONFIRMED and immutable; create a new revision', OLD.id;
+  -- Rule 1: a CONFIRMED row is fully immutable, including no-op writes.
+  IF OLD.confirmation_status = 'CONFIRMED' THEN
+    RAISE EXCEPTION 'tax_context % is CONFIRMED and immutable; create a new revision row instead (42890)', OLD.id;
+  END IF;
+  -- Rule 2: the confirmation transition may set status + actor/time only.
+  IF NEW.confirmation_status = 'CONFIRMED' AND OLD.confirmation_status <> 'CONFIRMED' THEN
+    IF NEW.id IS DISTINCT FROM OLD.id
+       OR NEW.tenant_id IS DISTINCT FROM OLD.tenant_id
+       OR NEW.client_id IS DISTINCT FROM OLD.client_id
+       OR NEW.subject_kind IS DISTINCT FROM OLD.subject_kind
+       OR NEW.subject_entity_id IS DISTINCT FROM OLD.subject_entity_id
+       OR NEW.subject_group_id IS DISTINCT FROM OLD.subject_group_id
+       OR NEW.jurisdiction_code IS DISTINCT FROM OLD.jurisdiction_code
+       OR NEW.tax_type_code IS DISTINCT FROM OLD.tax_type_code
+       OR NEW.regime_code IS DISTINCT FROM OLD.regime_code
+       OR NEW.obligation_profile_id IS DISTINCT FROM OLD.obligation_profile_id
+       OR NEW.profile_version IS DISTINCT FROM OLD.profile_version
+       OR NEW.period_start IS DISTINCT FROM OLD.period_start
+       OR NEW.period_end IS DISTINCT FROM OLD.period_end
+       OR NEW.pack_version IS DISTINCT FROM OLD.pack_version
+       OR NEW.snapshot IS DISTINCT FROM OLD.snapshot
+       OR NEW.context_hash IS DISTINCT FROM OLD.context_hash
+       OR NEW.context_revision IS DISTINCT FROM OLD.context_revision
+       OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
+      RAISE EXCEPTION 'tax_context % confirmation must not alter identity or content; create a new revision row instead (immutable, 42891)', OLD.id;
+    END IF;
+    RETURN NEW;
+  END IF;
+  -- Rule 3: pre-confirmation edits freeze identity and attribution only; working
+  -- fields (periods, snapshot, status steps below CONFIRMED, ...) stay editable.
+  IF NEW.id IS DISTINCT FROM OLD.id
+     OR NEW.tenant_id IS DISTINCT FROM OLD.tenant_id
+     OR NEW.client_id IS DISTINCT FROM OLD.client_id
+     OR NEW.subject_kind IS DISTINCT FROM OLD.subject_kind
+     OR NEW.subject_entity_id IS DISTINCT FROM OLD.subject_entity_id
+     OR NEW.subject_group_id IS DISTINCT FROM OLD.subject_group_id
+     OR NEW.jurisdiction_code IS DISTINCT FROM OLD.jurisdiction_code
+     OR NEW.obligation_profile_id IS DISTINCT FROM OLD.obligation_profile_id
+     OR NEW.created_at IS DISTINCT FROM OLD.created_at
+     OR NEW.confirmed_by IS DISTINCT FROM OLD.confirmed_by
+     OR NEW.confirmed_at IS DISTINCT FROM OLD.confirmed_at THEN
+    RAISE EXCEPTION 'tax_context % identity and attribution are immutable (42892)', OLD.id;
   END IF;
   RETURN NEW;
 END;

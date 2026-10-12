@@ -1,6 +1,12 @@
 """Versioned SQL migration runner (stdlib + psycopg only).
 
 - Applies `db/migrations/versions/*.sql` in lexicographic order, one transaction each.
+- R4 transaction contract (verified by tests, not merely documented): EACH
+  version file applies atomically — its statements plus its ledger INSERT commit
+  together, or roll back together leaving no trace. There is deliberately NO
+  cross-version transaction: a broken later migration aborts its own version
+  only, while earlier versions in the same run stay committed; the fixed rerun
+  then applies exactly the remainder (ledger-gated, never double-applied).
 - Records applied versions in schema_migrations; re-runs are no-ops (idempotent).
 - Rejects badly named files, duplicate version identifiers, and records nothing for
   failed migrations (the failed statement rolls back; the version stays unapplied).
@@ -142,12 +148,25 @@ def migrate(
                         conn.commit()
                     continue
                 sql = path.read_text(encoding="utf-8")
-                with conn.transaction():
+                # R4 (PR #41 review): genuine per-version atomicity. The file's
+                # statements plus its ledger INSERT commit TOGETHER; on failure
+                # the version rolls back alone while earlier versions in this
+                # run stay committed. (A `with conn.transaction()` savepoint
+                # block here was insufficient: savepoint release is not
+                # durable, so a later failure rolled back earlier versions on
+                # connection close. Explicit commit per version is the contract
+                # the tests verify.)
+                try:
                     conn.execute(sql)
                     conn.execute(
                         "INSERT INTO schema_migrations(version, sha256) VALUES (%s, %s)",
                         (version, checksums[version]),
                     )
+                except Exception:
+                    conn.rollback()
+                    raise
+                else:
+                    conn.commit()
                 applied.append(version)
         finally:
             try:

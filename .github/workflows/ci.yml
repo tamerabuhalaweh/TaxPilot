@@ -81,18 +81,35 @@ jobs:
       - name: Create disposable destructive-test database
         run: |
           python - <<'EOF'
+          import socket
+          import time
+
           import psycopg
+
+          print("localhost resolves to:", socket.getaddrinfo("localhost", 5432))
           admin = psycopg.connect("host=localhost dbname=taxpilot user=taxpilot password=taxpilot", connect_timeout=10)
           admin.autocommit = True
-          exists = admin.execute("SELECT 1 FROM pg_database WHERE datname = 'taxpilot_test'").fetchone()
-          if not exists:
+          before = sorted(r[0] for r in admin.execute("SELECT datname FROM pg_database WHERE NOT datistemplate").fetchall())
+          print("databases before:", before)
+          if "taxpilot_test" not in before:
               admin.execute("CREATE DATABASE taxpayer_test")
-          admin.commit()
+              print("CREATE DATABASE issued")
+          after = sorted(r[0] for r in admin.execute("SELECT datname FROM pg_database WHERE NOT datistemplate").fetchall())
+          print("databases after (same connection):", after)
           admin.close()
-          # Verify on a FRESH connection (fail loudly here, not deep in pytest).
-          probe = psycopg.connect("host=localhost dbname=taxpilot_test user=taxpilot password=taxpilot", connect_timeout=10)
-          probe.execute("SELECT 1")
-          probe.close()
+          # Verify on FRESH connections with retries (fail loudly here, not deep in pytest).
+          for attempt in range(5):
+              try:
+                  probe = psycopg.connect("host=localhost dbname=taxpilot_test user=taxpilot password=taxpilot", connect_timeout=10)
+                  probe.execute("SELECT 1")
+                  probe.close()
+                  print(f"probe ok on attempt {attempt}")
+                  break
+              except Exception as exc:
+                  print(f"probe attempt {attempt} failed: {exc}")
+                  time.sleep(3)
+          else:
+              raise SystemExit("disposable test database never became visible")
           print("disposable destructive-test database verified: taxpayer_test")
           EOF
       - name: "Migration + queue + API integration (services required: failures fail, never skip)"

@@ -2,18 +2,26 @@
 
 **Scope:** visual UI review and connected staging validation. No production deployment, no customer data, no financial processing. PR #39 (JUR plan) untouched.
 
+## 0. Verified Vercel state (2026-10-12, agent-checked)
+
+- Project **`tax-pilot`** exists with **Root Directory `apps/web`**; GitHub integration posts deployment statuses + preview comments to PRs (verified on PR #40).
+- Production domain `tax-pilot-five.vercel.app` serves `main` with NO environment variables: it shows the connected-mode UI with backend-unreachable states. That is expected (no backend is hosted) — it is not the visual preview.
+- The PR preview deployment for `feature/ui-preview-milestone` completed successfully AND serves Vercel's login wall to anonymous visitors: **Deployment Protection is ON**.
+- Still required (dashboard actions, §1): commercial plan decision, `NEXT_PUBLIC_PREVIEW_MODE=demo` on the **Preview** environment, then redeploy the PR branch.
+
 ## 1. Vercel project setup (Product Owner actions — require dashboard/admin access)
 
 The agent cannot perform these; they need a Vercel account owner:
 
 1. **Upgrade from Hobby to Pro before any commercial use.** Vercel Authentication can protect all deployments, including production, on every plan — but Hobby is non-commercial per the Vercel plans documentation, so commercial TaxPilot deployment should use Pro. Do not publish anything sensitive before the plan and protection are in place.
-2. **Install the Vercel GitHub App** on `tamerabuhalaweh/TaxPilot` (Vercel dashboard → Add GitHub account → select repository). This posts preview URLs + commit SHA + deployment status to every frontend PR and preserves the six GitHub Actions checks (Vercel does not replace CI).
-3. **Import project:** framework preset Next.js, **Root Directory = `apps/web`**, Node.js `22.x` (pinned in `apps/web/package.json` engines), build command default (`npm run build`), output default (`.next`). No `vercel.json` is committed on purpose — dashboard settings are the single source of truth for the monorepo root.
-4. **Environment variables** (Vercel dashboard → Project → Settings → Environment Variables; never in git):
-   - Preview scope: `NEXT_PUBLIC_PREVIEW_MODE=demo` (visual walkthrough, no backend needed).
+2. **Install the Vercel GitHub App** on `tamerabuhalaweh/TaxPilot` ✅ DONE (deployment statuses + preview comments appear on PRs; Actions checks preserved).
+3. **Import project** ✅ DONE: framework Next.js, **Root Directory = `apps/web`**, Node.js `22.x`. No `vercel.json` is committed on purpose — dashboard settings are the single source of truth for the monorepo root.
+4. **Environment variables** (Vercel dashboard → Project → Settings → Environment Variables; never in git) — OPEN, blocks the visual preview:
+   - Preview scope: `NEXT_PUBLIC_PREVIEW_MODE=demo` (visual walkthrough, no backend needed). Do NOT set `API_INTERNAL_URL` for the visual-only demo.
    - Preview scope (connected staging, once §3 exists): `NEXT_PUBLIC_PREVIEW_MODE=connected` (or unset), `API_INTERNAL_URL=https://<staging-api-host>` (server-side only, never `NEXT_PUBLIC_`).
    - Production scope: **do not deploy production until** Deployment Protection is on, the staging backend of §3 is approved, and secrets are set (no values in this repo).
-5. **Enable Deployment Protection** (Vercel Authentication) on Preview deployments, and on Production when it exists. Verify protection by opening the preview URL in a logged-out private window before sharing it.
+   - After saving, **Redeploy** the PR branch (Deployments → ⋯ → Redeploy): env vars bake in at build time and do not retro-apply. Any fresh push also redeploys.
+5. **Deployment Protection** (Vercel Authentication) ✅ VERIFIED ON for the PR preview (anonymous visitors receive Vercel's login wall). Keep it on for Preview and future Production; re-verify in a logged-out private window after any project change.
 
 ## 2. Preview modes (build-time contract, `apps/web/lib/preview.ts`)
 

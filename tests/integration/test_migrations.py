@@ -2,12 +2,23 @@
 
 Service-gating contract: when REQUIRE_SERVICES=1 (CI integration job), an unreachable
 database FAILS these tests. Locally, service-dependent tests skip with an explicit
-reason (documented optional mode) instead of silently passing.
+reason (documented optional local mode) instead of silently passing.
+
+TEST-SAFETY-01: the tests below that destroy state (dropping the ledger,
+applying migrations) run against the DEDICATED DISPOSABLE database from
+TAXPILOT_DESTRUCTIVE_DATABASE_URL via the dbsafety guard — never DATABASE_URL.
+Pure file/manifest tests and the unreachable-host test need no database.
 """
 
 import os
+import sys
 
 import pytest
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))  # repo root
+sys.path.insert(0, os.path.dirname(__file__))  # sibling dbsafety module
+
+import dbsafety
 
 psycopg = pytest.importorskip("psycopg")
 
@@ -31,6 +42,28 @@ def _db_or_skip() -> str:
             pytest.fail(f"postgres unreachable with REQUIRE_SERVICES=1: {exc}")
         pytest.skip(f"postgres unreachable (documented optional local mode): {exc}")
     return url
+
+
+_DURL: str | None = None
+
+
+def _destructive_or_skip() -> str:
+    """Resolve + verify the disposable destructive target (TEST-SAFETY-01).
+
+    Guard failure skips locally but fails hard with REQUIRE_SERVICES=1.
+    """
+    _db_or_skip()
+    global _DURL
+    if _DURL is None:
+        candidate = dbsafety.destructive_url()
+        try:
+            dbsafety.require_destructive_db(candidate)
+        except ValueError as exc:
+            if REQUIRE_SERVICES:
+                pytest.fail(f"destructive-test safeguard refused target: {exc}")
+            pytest.skip(f"destructive-test safeguard refused target: {exc}")
+        _DURL = candidate
+    return _DURL
 
 
 def test_migration_discovery_exact_and_ordered():
@@ -57,7 +90,8 @@ def test_discover_rejects_duplicate_versions(tmp_path):  # type: ignore[no-untyp
 
 
 def test_first_migration_applies_and_rerun_is_noop():
-    url = _db_or_skip()
+    # TEST-SAFETY-01: drops the ledger, so it runs on the disposable database.
+    url = _destructive_or_skip()
     with psycopg.connect(_to_libpq(url), connect_timeout=5) as conn:
         conn.execute("DROP TABLE IF EXISTS schema_migrations")
     assert migrate(url) == ["0001", "0002", "0003", "0004"]
@@ -71,7 +105,9 @@ def _sha_of(path):  # type: ignore[no-untyped-def]
 
 
 def test_failed_sql_records_nothing_and_leaves_clean_state(tmp_path):  # type: ignore[no-untyped-def]
-    url = _db_or_skip()
+    # TEST-SAFETY-01: exercises the real runner (ledger writes), so it runs
+    # on the disposable database.
+    url = _destructive_or_skip()
     (tmp_path / "0099_broken.sql").write_text(
         "THIS IS NOT VALID SQL;", encoding="utf-8"
     )

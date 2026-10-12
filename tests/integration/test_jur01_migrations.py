@@ -3,13 +3,25 @@
 Service-gating: REQUIRE_SERVICES=1 (CI) turns unreachable services into FAILURE.
 Destructive setup (dropping jur tables/ledger) always restores via migrate() in a
 finally block so later tests in the session keep a working schema.
+
+TEST-SAFETY-01: every test in this module runs against the DEDICATED
+DISPOSABLE database from TAXPILOT_DESTRUCTIVE_DATABASE_URL, guarded by
+dbsafety.require_destructive_db (explicit opt-in + designated *_test name +
+local/CI host). These tests NEVER touch DATABASE_URL, so they cannot destroy
+staging, production, or a shared development database.
 """
 
 import os
+import sys
 import threading
 import uuid
 
 import pytest
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))  # repo root
+sys.path.insert(0, os.path.dirname(__file__))  # sibling dbsafety module
+
+import dbsafety
 
 psycopg = pytest.importorskip("psycopg")
 
@@ -28,6 +40,28 @@ JUR_TABLES = [
     "jurisdiction_catalog",
 ]
 
+_DURL: str | None = None
+
+
+def _destructive_or_skip() -> str:
+    """Service-gate, then resolve + verify the disposable destructive target.
+
+    The guard failure is a SKIP in optional local mode but a hard FAILURE with
+    REQUIRE_SERVICES=1 — CI must prove the safety wiring on every run.
+    """
+    _db_or_skip()
+    global _DURL
+    if _DURL is None:
+        candidate = dbsafety.destructive_url()
+        try:
+            dbsafety.require_destructive_db(candidate)
+        except ValueError as exc:
+            if REQUIRE_SERVICES:
+                pytest.fail(f"destructive-test safeguard refused target: {exc}")
+            pytest.skip(f"destructive-test safeguard refused target: {exc}")
+        _DURL = candidate
+    return _DURL
+
 
 def _db_or_skip() -> str:
     if not URL:
@@ -45,7 +79,7 @@ def _db_or_skip() -> str:
 
 
 def _exec(sql: str, params: tuple = ()) -> list:
-    with psycopg.connect(_to_libpq(URL), connect_timeout=5) as conn:
+    with psycopg.connect(_to_libpq(_destructive_or_skip()), connect_timeout=5) as conn:
         rows = (
             conn.execute(sql, params).fetchall()
             if sql.strip().upper().startswith("SELECT")
@@ -67,7 +101,8 @@ def _reset_jur() -> None:
     # candidate key is NEVER dropped here (no CASCADE against it): dropping
     # the jur tables removes the dependent FKs while the key persists, and the
     # next migrate() exercises the verify-only path on the surviving key.
-    with psycopg.connect(_to_libpq(URL), connect_timeout=10) as conn:
+    # TEST-SAFETY-01: runs against the guarded disposable database only.
+    with psycopg.connect(_to_libpq(_destructive_or_skip()), connect_timeout=10) as conn:
         for table in JUR_TABLES:
             conn.execute(f"DROP TABLE IF EXISTS {table} CASCADE")
         conn.execute("DELETE FROM schema_migrations WHERE version = '0004'")
@@ -76,13 +111,13 @@ def _reset_jur() -> None:
 
 @pytest.fixture()
 def clean_jur():  # type: ignore[no-untyped-def]
-    _db_or_skip()
+    url = _destructive_or_skip()
     _reset_jur()
     try:
         yield
     finally:
         _reset_jur()
-        migrate(URL)
+        migrate(url)
 
 
 def _tenant_and_client(conn, tag: str = "t"):  # type: ignore[no-untyped-def]
@@ -100,7 +135,7 @@ def test_1_fresh_install_applies_all_versions_with_seeds():
     # R4: GENUINE fresh installation — the entire schema is destroyed first, so
     # this proves 0001..0004 build a working database from nothing (not merely
     # that 0004 layers onto surviving Sprint 1 tables).
-    url = _db_or_skip()
+    url = _destructive_or_skip()
     with psycopg.connect(_to_libpq(url), connect_timeout=10) as conn:
         conn.execute("DROP SCHEMA public CASCADE")
         conn.execute("CREATE SCHEMA public")
@@ -135,7 +170,7 @@ def test_1_fresh_install_applies_all_versions_with_seeds():
 
 
 def test_2_upgrade_keeps_existing_sprint1_data(clean_jur):
-    url = _db_or_skip()
+    url = _destructive_or_skip()
     with psycopg.connect(_to_libpq(url), connect_timeout=10) as conn:
         tid, cid = _tenant_and_client(conn, "keep")
         conn.commit()
@@ -145,7 +180,7 @@ def test_2_upgrade_keeps_existing_sprint1_data(clean_jur):
 
 
 def test_3_no_fabricated_backfill(clean_jur):
-    url = _db_or_skip()
+    url = _destructive_or_skip()
     with psycopg.connect(_to_libpq(url), connect_timeout=10) as conn:
         before = conn.execute("SELECT COUNT(*) FROM clients").fetchone()[0]
         _tenant_and_client(conn, "plain")
@@ -171,7 +206,7 @@ def _entity(conn, tid, cid, country="JO", name=None):  # type: ignore[no-untyped
 
 
 def test_4_cross_tenant_references_rejected(clean_jur):
-    url = _db_or_skip()
+    url = _destructive_or_skip()
     migrate(url)
     import psycopg as _pg
 
@@ -199,7 +234,7 @@ def test_4_cross_tenant_references_rejected(clean_jur):
 
 
 def test_5_same_tenant_different_client_rejected(clean_jur):
-    url = _db_or_skip()
+    url = _destructive_or_skip()
     migrate(url)
     import psycopg as _pg
 
@@ -246,7 +281,7 @@ def test_5_same_tenant_different_client_rejected(clean_jur):
 
 
 def test_6_unique_and_composite_keys(clean_jur):
-    url = _db_or_skip()
+    url = _destructive_or_skip()
     migrate(url)
     import psycopg as _pg
 
@@ -293,7 +328,7 @@ def test_6_unique_and_composite_keys(clean_jur):
 
 
 def test_7_confirmed_context_freeze(clean_jur):
-    url = _db_or_skip()
+    url = _destructive_or_skip()
     migrate(url)
     import psycopg as _pg
 
@@ -396,7 +431,7 @@ def test_7_confirmed_context_freeze(clean_jur):
 
 
 def test_8_crypto_column_constraints(clean_jur):
-    url = _db_or_skip()
+    url = _destructive_or_skip()
     migrate(url)
     import psycopg as _pg
 
@@ -496,7 +531,7 @@ def test_8_crypto_column_constraints(clean_jur):
 
 
 def test_10_concurrent_migrators_serialize(clean_jur):
-    url = _db_or_skip()
+    url = _destructive_or_skip()
     migrate(url)
     results: list = []
     errors: list = []
@@ -520,7 +555,7 @@ def test_10_concurrent_migrators_serialize(clean_jur):
 
 
 def test_11_failure_rollback_and_rerun(tmp_path):  # type: ignore[no-untyped-def]
-    url = _db_or_skip()
+    url = _destructive_or_skip()
     (tmp_path / "0011_broken.sql").write_text(
         "THIS IS NOT VALID SQL;", encoding="utf-8"
     )
@@ -551,7 +586,7 @@ def test_11_failure_rollback_and_rerun(tmp_path):  # type: ignore[no-untyped-def
 
 
 def test_12_schema_matches_definitions():
-    url = _db_or_skip()
+    url = _destructive_or_skip()
     migrate(url)
     from sqlalchemy import create_engine
 
@@ -580,7 +615,7 @@ def test_13_rerun_without_ledger_row_preserves_key_and_constraints(clean_jur):
     # R1: re-applying 0004 against an existing schema with the ledger entry
     # deliberately missing must VERIFY (never drop) the clients candidate key,
     # leaving tenant isolation, same-client bindings, and every FK intact.
-    url = _db_or_skip()
+    url = _destructive_or_skip()
     assert migrate(url) == ["0004"]
     import psycopg as _pg
 
@@ -654,7 +689,7 @@ def test_13_rerun_without_ledger_row_preserves_key_and_constraints(clean_jur):
 def test_14_concurrent_runners_single_pending_winner(clean_jur):
     # R4: several runners racing to apply a genuinely PENDING 0004 must
     # serialize on the advisory lock — exactly one applies, the rest observe.
-    url = _db_or_skip()
+    url = _destructive_or_skip()
     assert migrate(url) == ["0004"]
     import psycopg as _pg
 
@@ -691,7 +726,7 @@ def test_15_later_failure_keeps_earlier_version_and_reruns_clean(tmp_path):  # t
     # R4: per-version atomicity — a broken later migration aborts its OWN
     # version only; earlier versions in the same run stay committed, and a
     # fixed rerun applies exactly the remainder.
-    url = _db_or_skip()
+    url = _destructive_or_skip()
     import hashlib as _hashlib
     import psycopg as _pg
 

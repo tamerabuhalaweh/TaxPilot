@@ -29,10 +29,15 @@ async function forward(req: NextRequest, segments: string[], method: string): Pr
       { status: 413 }
     );
   }
-  // No custom per-IP throttle here (R1): without a configured trusted proxy,
-  // X-Forwarded-For is untrusted and absent headers would share one bucket and
-  // lock out unrelated users. Abuse protection is the backend's per-email
-  // limiter plus (production) platform-edge limiting tracked under #36.
+  // Demo builds have no backend and no accounts: auth traffic is fail-closed
+  // here so no credential-bearing request can ever leave the preview host.
+  // Connected builds leave this path untouched.
+  if (process.env.NEXT_PUBLIC_PREVIEW_MODE === "demo" && segments[0] === "auth") {
+    return NextResponse.json(
+      { error: { code: "FEATURE_DISABLED", message: "Sign-in is disabled in this visual preview." } },
+      { status: 403 }
+    );
+  }
   const url = `${backendBase()}/api/v1/${segments.join("/")}${req.nextUrl.search}`;
   const headers = filterHeaders(req.headers.entries());
   const controller = new AbortController();

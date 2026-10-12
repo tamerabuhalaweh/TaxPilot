@@ -3,13 +3,14 @@
 import Link from "next/link";
 import { use, useEffect, useState } from "react";
 import { DemoBanner, PreviewOnly } from "../../../components/Preview";
+import { useLocale } from "../../../components/LocaleProvider";
 import { LocaleControls } from "../../../components/LocaleControls";
 import { Nav } from "../../../components/Nav";
 import { Tabs } from "../../../components/Tabs";
 import { EmptyState } from "../../../components/EmptyState";
 import { ApiRequestError, type ClientPayload } from "../../../lib/api";
 import { DEMO_CLIENTS } from "../../../lib/demo-data";
-import { dirOf, t, type Locale } from "../../../lib/i18n";
+import { t } from "../../../lib/i18n";
 import { isDemoMode } from "../../../lib/preview";
 
 async function fetchClient(id: string): Promise<ClientPayload> {
@@ -21,15 +22,10 @@ async function fetchClient(id: string): Promise<ClientPayload> {
 /** Client detail workspace: profile summary plus review/document/finding/report areas. */
 export default function ClientDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
-  const [locale, setLocale] = useState<Locale>("en");
+  const { locale, setLocale } = useLocale();
   const [client, setClient] = useState<{ name: string; sector: string; status: string } | null>(null);
   const [missing, setMissing] = useState(false);
   const demo = isDemoMode();
-
-  useEffect(() => {
-    document.documentElement.lang = locale;
-    document.documentElement.dir = dirOf(locale);
-  }, [locale]);
 
   useEffect(() => {
     if (demo) {
@@ -89,3 +85,6 @@ export default function ClientDetailPage({ params }: { params: Promise<{ id: str
     </main>
   );
 }
+
+
+

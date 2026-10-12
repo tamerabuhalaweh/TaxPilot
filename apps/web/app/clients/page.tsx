@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { Alert } from "../../components/Alert";
 import { Button } from "../../components/Button";
 import { DemoBanner } from "../../components/Preview";
+import { useLocale } from "../../components/LocaleProvider";
 import { LocaleControls } from "../../components/LocaleControls";
 import { Nav } from "../../components/Nav";
 import { EmptyState } from "../../components/EmptyState";
@@ -16,7 +17,7 @@ import {
   type ClientPayload
 } from "../../lib/api";
 import { DEMO_CLIENTS, type DemoClient } from "../../lib/demo-data";
-import { dirOf, t, type Locale } from "../../lib/i18n";
+import { t } from "../../lib/i18n";
 import { isDemoMode } from "../../lib/preview";
 
 interface Row {
@@ -29,7 +30,7 @@ interface Row {
 
 /** Clients: searchable table, create flow, detail links. */
 export default function ClientsPage() {
-  const [locale, setLocale] = useState<Locale>("en");
+  const { locale, setLocale } = useLocale();
   const [rows, setRows] = useState<Row[]>([]);
   const [query, setQuery] = useState("");
   const [name, setName] = useState("");
@@ -37,11 +38,6 @@ export default function ClientsPage() {
   const [denied, setDenied] = useState(false);
   const [busy, setBusy] = useState(false);
   const demo = isDemoMode();
-
-  useEffect(() => {
-    document.documentElement.lang = locale;
-    document.documentElement.dir = dirOf(locale);
-  }, [locale]);
 
   function toRow(c: ClientPayload | DemoClient): Row {
     if ("nameAr" in c) {
@@ -194,3 +190,6 @@ export default function ClientsPage() {
     </main>
   );
 }
+
+
+

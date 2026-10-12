@@ -6,14 +6,14 @@
 
 The agent cannot perform these; they need a Vercel account owner:
 
-1. **Upgrade from Hobby to a commercial plan** (Standard or higher) BEFORE any deployment carrying real-looking auth flows. Hobby preview URLs rely on obscurity alone; Deployment Protection (Vercel Authentication / password / SSO) requires a paid plan.
+1. **Upgrade from Hobby to Pro before any commercial use.** Vercel Authentication can protect all deployments, including production, on every plan — but Hobby is non-commercial per the Vercel plans documentation, so commercial TaxPilot deployment should use Pro. Do not publish anything sensitive before the plan and protection are in place.
 2. **Install the Vercel GitHub App** on `tamerabuhalaweh/TaxPilot` (Vercel dashboard → Add GitHub account → select repository). This posts preview URLs + commit SHA + deployment status to every frontend PR and preserves the six GitHub Actions checks (Vercel does not replace CI).
 3. **Import project:** framework preset Next.js, **Root Directory = `apps/web`**, Node.js `22.x` (pinned in `apps/web/package.json` engines), build command default (`npm run build`), output default (`.next`). No `vercel.json` is committed on purpose — dashboard settings are the single source of truth for the monorepo root.
 4. **Environment variables** (Vercel dashboard → Project → Settings → Environment Variables; never in git):
    - Preview scope: `NEXT_PUBLIC_PREVIEW_MODE=demo` (visual walkthrough, no backend needed).
    - Preview scope (connected staging, once §3 exists): `NEXT_PUBLIC_PREVIEW_MODE=connected` (or unset), `API_INTERNAL_URL=https://<staging-api-host>` (server-side only, never `NEXT_PUBLIC_`).
    - Production scope: **do not deploy production until** Deployment Protection is on, the staging backend of §3 is approved, and secrets are set (no values in this repo).
-5. **Enable Deployment Protection** on Preview (and later Production) deployments so nothing is publicly reachable without authentication.
+5. **Enable Deployment Protection** (Vercel Authentication) on Preview deployments, and on Production when it exists. Verify protection by opening the preview URL in a logged-out private window before sharing it.
 
 ## 2. Preview modes (build-time contract, `apps/web/lib/preview.ts`)
 
@@ -33,7 +33,7 @@ Assumed constraint: FastAPI is NOT publicly reachable today. Recommended arrange
 - **Redis:** managed instance (e.g. Upstash/Render Key-Value) via `REDIS_URL`.
 - **Staging env (all server-side, never committed):** `ENVIRONMENT=staging`, `DATABASE_URL`, `REDIS_URL`, `API_INTERNAL_URL` (on Vercel), `CORS_ALLOWED_ORIGINS=https://<staging-web-host>`, `AUTH_EXPOSE_TOKENS` unset (forced off outside development), `JOBS_DURABILITY_APPROVED` unset (queue stays dev-grade).
 - **TLS:** terminate at host/proxy (HTTPS only); `Secure` cookies automatic outside development.
-- **Seeded synthetic access:** `python apps/api/scripts/seed_staging.py` (this repo) creates one synthetic firm, two verified users (owner + accountant), and two synthetic clients; random passwords are printed ONCE to the operator console and must be rotated after first login. No real names, no customer data, no committed credentials. Run exclusively against the staging database URL.
+- **Seeded synthetic access:** `python apps/api/scripts/seed_staging.py` (this repo) creates one synthetic firm, two verified users (owner + accountant), and two synthetic clients. It runs ONLY with `ENVIRONMENT=staging`, refuses reruns once seeded accounts exist, and writes random passwords ONLY to the file named by `SEED_OUT_FILE` (created 0600) — never to stdout, since providers retain logs. Rotate after first login. No real names, no customer data, no committed credentials. Run exclusively against the staging database URL.
 - **Isolation:** separate database, separate Redis DB/index, separate domain; no production counterpart exists — do not reuse any production secret if one is ever created.
 
 ## 4. What is functional vs preview-only (Sprint 1 + UI milestone state)
@@ -54,7 +54,7 @@ Never simulated: reconciliation outcomes, financial figures as results, tax conc
 
 ## 6. Verification evidence expected on the PR
 
-- Six GitHub Actions checks green at the PR head (Vercel deployment statuses appear additionally once the GitHub App is installed).
+- All GitHub Actions jobs green at the PR head (backend, docs, frontend, integration, browser, browser-demo, security; Vercel deployment statuses appear additionally once the GitHub App is installed).
 - Playwright suite green (auth journey + proxy wire tests run against connected local stack in CI).
 - Screenshots below (`docs/sprints/ui-milestone-1/`, demo build, JPEG): dashboard/clients/new-review EN+AR, desktop (1280) + mobile (390).
   - `dashboard-en-desktop.jpg`, `dashboard-en-mobile.jpg`, `dashboard-ar-desktop.jpg`

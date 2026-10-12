@@ -1,19 +1,16 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+
 import { DemoBanner, PreviewOnly } from "../../components/Preview";
+import { useLocale } from "../../components/LocaleProvider";
 import { LocaleControls } from "../../components/LocaleControls";
 import { Nav } from "../../components/Nav";
-import { dirOf, t, type Locale } from "../../lib/i18n";
+import { t } from "../../lib/i18n";
 
 /** Settings index: honest placeholder until firm/workspace settings land. */
 export default function SettingsPage() {
-  const [locale, setLocale] = useState<Locale>("en");
-  useEffect(() => {
-    document.documentElement.lang = locale;
-    document.documentElement.dir = dirOf(locale);
-  }, [locale]);
+  const { locale, setLocale } = useLocale();
   return (
     <main>
       <div className="tp-topbar">
@@ -29,3 +26,7 @@ export default function SettingsPage() {
     </main>
   );
 }
+
+
+
+

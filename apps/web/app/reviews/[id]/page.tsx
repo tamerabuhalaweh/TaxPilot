@@ -1,20 +1,17 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+
 import { DemoBanner, PreviewOnly } from "../../../components/Preview";
+import { useLocale } from "../../../components/LocaleProvider";
 import { LocaleControls } from "../../../components/LocaleControls";
 import { Nav } from "../../../components/Nav";
 import { Tabs } from "../../../components/Tabs";
-import { dirOf, t, type Locale } from "../../../lib/i18n";
+import { t } from "../../../lib/i18n";
 
 /** Review workspace: tabbed sections, honestly marked until the engine lands. */
 export default function ReviewWorkspacePage() {
-  const [locale, setLocale] = useState<Locale>("en");
-  useEffect(() => {
-    document.documentElement.lang = locale;
-    document.documentElement.dir = dirOf(locale);
-  }, [locale]);
+  const { locale, setLocale } = useLocale();
   return (
     <main>
       <div className="tp-topbar">
@@ -45,3 +42,7 @@ export default function ReviewWorkspacePage() {
     </main>
   );
 }
+
+
+
+

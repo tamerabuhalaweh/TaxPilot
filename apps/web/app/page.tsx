@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { Alert } from "../components/Alert";
 import { Button } from "../components/Button";
 import { DemoBanner, PreviewOnly } from "../components/Preview";
+import { useLocale } from "../components/LocaleProvider";
 import { LocaleControls } from "../components/LocaleControls";
 import { Nav } from "../components/Nav";
 import { StatCard } from "../components/StatCard";
@@ -20,22 +21,17 @@ import {
   type MePayload
 } from "../lib/api";
 import { DEMO_CLIENTS, DEMO_FIRM, DEMO_REVIEWS } from "../lib/demo-data";
-import { dirOf, t, type Locale } from "../lib/i18n";
+import { t } from "../lib/i18n";
 import { isDemoMode } from "../lib/preview";
 
 type LoadState = "checking" | "down" | "signed-out" | "ready";
 
 /** Firm dashboard: navigation, firm overview, clients, and review status. */
 export default function DashboardPage() {
-  const [locale, setLocale] = useState<Locale>("en");
+  const { locale, setLocale } = useLocale();
   const [state, setState] = useState<LoadState>("checking");
   const [me, setMe] = useState<MePayload | null>(null);
   const [clients, setClients] = useState<ClientPayload[]>([]);
-
-  useEffect(() => {
-    document.documentElement.lang = locale;
-    document.documentElement.dir = dirOf(locale);
-  }, [locale]);
 
   useEffect(() => {
     if (isDemoMode()) {
@@ -198,3 +194,5 @@ export default function DashboardPage() {
     </main>
   );
 }
+
+

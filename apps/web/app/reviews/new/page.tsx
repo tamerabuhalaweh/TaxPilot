@@ -4,28 +4,24 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { Button } from "../../../components/Button";
 import { DemoBanner } from "../../../components/Preview";
+import { useLocale } from "../../../components/LocaleProvider";
 import { LocaleControls } from "../../../components/LocaleControls";
 import { Nav } from "../../../components/Nav";
 import { StatusPill } from "../../../components/StatusPill";
 import { listClients, type ClientPayload } from "../../../lib/api";
 import { DEMO_CLIENTS } from "../../../lib/demo-data";
-import { dirOf, t, type Locale } from "../../../lib/i18n";
+import { t } from "../../../lib/i18n";
 import { isDemoMode } from "../../../lib/preview";
 
 /** New Review: client, period, type, and the three source types. The
  * reconciliation run itself is honestly marked as coming soon. */
 export default function NewReviewPage() {
-  const [locale, setLocale] = useState<Locale>("en");
+  const { locale, setLocale } = useLocale();
   const [clients, setClients] = useState<{ id: string; name: string }[]>([]);
   const [clientId, setClientId] = useState("");
   const [start, setStart] = useState("2026-01-01");
   const [end, setEnd] = useState("2026-09-30");
   const demo = isDemoMode();
-
-  useEffect(() => {
-    document.documentElement.lang = locale;
-    document.documentElement.dir = dirOf(locale);
-  }, [locale]);
 
   useEffect(() => {
     if (demo) {
@@ -107,4 +103,7 @@ export default function NewReviewPage() {
     </main>
   );
 }
+
+
+
 

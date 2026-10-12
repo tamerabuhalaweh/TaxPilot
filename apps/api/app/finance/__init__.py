@@ -8,6 +8,7 @@ from app.finance.money import (
     MoneyParseError,
     ParsedMoney,
     ParseProfile,
+    parse_amount,
     sum_same_currency,
     total_by_currency,
 )
@@ -17,6 +18,7 @@ __all__ = [
     "MoneyParseError",
     "ParsedMoney",
     "ParseProfile",
+    "parse_amount",
     "sum_same_currency",
     "total_by_currency",
 ]

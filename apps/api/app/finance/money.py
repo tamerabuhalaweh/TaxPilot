@@ -15,7 +15,16 @@ Contract:
   (a ``ValueError``); never coerced to zero.
 - Grouping is strictly validated (``12,34.56`` rejected for comma grouping).
 - Exact precision/sign preserved; no FX, rounding, or quantization here.
+- All addition/aggregation uses integer-scaled exact arithmetic that is
+  independent of the ambient :mod:`decimal` context precision (bare ``Decimal``
+  ``+`` observes the default 28-digit precision and would silently round
+  valid long inputs). Cost scales with digit count; supported source lengths
+  and bulk totals stay exact.
 - Aggregation segregates by currency; mixing raises or stays separated.
+- :class:`ParsedMoney` enforces its invariants at construction (finite
+  :class:`Decimal` only, canonical currency, non-blank text raw); derived
+  amounts from ``__add__`` carry ``is_derived=True`` and their ``raw`` is a
+  human-readable expression, never original source evidence.
 """
 
 from __future__ import annotations
@@ -23,7 +32,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, DecimalTuple, InvalidOperation
 
 MAX_RAW_LENGTH = 64
 _DIGITS = frozenset("0123456789")
@@ -83,13 +92,52 @@ class ParseProfile:
 class ParsedMoney:
     """Parsed monetary value with source retained.
 
-    ``raw`` is the exact caller-supplied text (unstripped). ``amount`` is the
-    exact :class:`Decimal`; ``currency`` is the normalized 3-letter code.
+    ``raw`` is the exact caller-supplied text (unstripped) for parsed amounts
+    (``is_derived`` False). ``amount`` is the exact :class:`Decimal`;
+    ``currency`` is the normalized 3-letter code (stored canonical uppercase).
+    Amounts derived via ``__add__`` carry ``is_derived=True``; their ``raw``
+    is a human-readable expression such as ``"(a)+(b)"`` and MUST NOT be
+    treated as original source evidence.
+
+    Invariants are enforced at construction: ``raw`` must be non-blank text,
+    ``amount`` must be a finite :class:`Decimal` (``float``/``int``/``NaN``/
+    ``Infinity`` rejected), ``currency`` must be an explicit 3-letter code,
+    and ``is_derived`` must be a :class:`bool`. Violations raise
+    :class:`MoneyParseError` (never silently accepted).
     """
 
     raw: str
     amount: Decimal
     currency: str
+    is_derived: bool = False
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.raw, str):
+            raise MoneyParseError(
+                f"raw must be source text, got {type(self.raw).__name__}",
+                code="invalid_type",
+                raw=self.raw,
+            )
+        if self.raw.strip() == "":
+            raise MoneyParseError("blank raw is not a monetary value", code="blank", raw=self.raw)
+        if not isinstance(self.amount, Decimal):
+            raise MoneyParseError(
+                f"amount must be Decimal, got {type(self.amount).__name__}; "
+                "float/int input is rejected (no binary-float path)",
+                code="invalid_type",
+                raw=self.raw,
+            )
+        if self.amount.is_nan() or self.amount.is_infinite():
+            raise MoneyParseError(
+                f"non-finite amount {self.amount!r} rejected", code="non_finite", raw=self.raw
+            )
+        object.__setattr__(self, "currency", _normalize_currency(self.currency, self.raw))
+        if not isinstance(self.is_derived, bool):
+            raise MoneyParseError(
+                f"is_derived must be bool, got {type(self.is_derived).__name__}",
+                code="invalid_type",
+                raw=self.raw,
+            )
 
     def __add__(self, other: object) -> ParsedMoney:
         if not isinstance(other, ParsedMoney):
@@ -102,9 +150,39 @@ class ParsedMoney:
             )
         return ParsedMoney(
             raw=f"({self.raw})+({other.raw})",
-            amount=self.amount + other.amount,
+            amount=_exact_add(self.amount, other.amount),
             currency=self.currency,
+            is_derived=True,
         )
+
+
+def _signed_coeff(t: DecimalTuple) -> int:
+    digits = "".join(str(d) for d in t.digits) or "0"
+    value = int(digits)
+    return -value if t.sign else value
+
+
+def _exact_add(a: Decimal, b: Decimal) -> Decimal:
+    """Exact :class:`Decimal` addition, independent of ambient context precision.
+
+    Bare ``a + b`` observes ``decimal.getcontext().prec`` (default 28) and can
+    silently round valid long inputs (e.g. a 28-digit whole plus cents loses
+    the cents). Integer-scaled accumulation with arbitrary-precision ints
+    stays exact for any supported input length and bulk total without reading
+    or mutating the global context.
+    """
+    ta = a.as_tuple()
+    tb = b.as_tuple()
+    ea = ta.exponent
+    eb = tb.exponent
+    if isinstance(ea, str) or isinstance(eb, str):  # NaN/Infinity markers
+        raise MoneyParseError("non-finite Decimal cannot be aggregated", code="non_finite")
+    common = ea if ea < eb else eb
+    coeff = _signed_coeff(ta) * (10 ** (ea - common)) + _signed_coeff(tb) * (10 ** (eb - common))
+    if coeff == 0:
+        return Decimal((0, (0,), common))
+    sign = 0 if coeff > 0 else 1
+    return Decimal((sign, tuple(int(d) for d in str(abs(coeff))), common))
 
 
 def _normalize_currency(currency: object, raw: object) -> str:
@@ -271,24 +349,22 @@ def total_by_currency(items: Iterable[ParsedMoney]) -> dict[str, Decimal]:
     """Sum parsed amounts segregated by currency (pure; new dict each call).
 
     Never combines currencies. Empty input yields ``{}`` (not zero).
+    Addition is context-independent exact (see :func:`_exact_add`).
     """
     totals: dict[str, Decimal] = {}
     for item in items:
         if not isinstance(item, ParsedMoney):
             raise TypeError(f"total_by_currency expects ParsedMoney, got {type(item).__name__}")
-        totals[item.currency] = totals.get(item.currency, Decimal("0")) + item.amount
+        totals[item.currency] = _exact_add(totals.get(item.currency, Decimal("0")), item.amount)
     return totals
 
 
 def sum_same_currency(items: Iterable[ParsedMoney], *, currency: str) -> Decimal:
-    """Sum amounts that must all match ``currency``; mixed input raises."""
-    want = currency.strip().upper()
-    if not _CURRENCY_RE.match(want):
-        raise MoneyParseError(
-            f"currency must be an explicit 3-letter code, got {currency!r}",
-            code="invalid_currency",
-            raw=None,
-        )
+    """Sum amounts that must all match ``currency``; mixed input raises.
+
+    Addition is context-independent exact (see :func:`_exact_add`).
+    """
+    want = _normalize_currency(currency, None)
     total = Decimal("0")
     for item in items:
         if not isinstance(item, ParsedMoney):
@@ -299,5 +375,5 @@ def sum_same_currency(items: Iterable[ParsedMoney], *, currency: str) -> Decimal
                 expected=want,
                 found=item.currency,
             )
-        total += item.amount
+        total = _exact_add(total, item.amount)
     return total

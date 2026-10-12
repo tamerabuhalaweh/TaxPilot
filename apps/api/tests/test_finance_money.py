@@ -248,3 +248,130 @@ def test_non_ascii_digits_rejected() -> None:
 def test_totals_reject_non_parsed_items() -> None:
     with pytest.raises(TypeError):
         total_by_currency(["1.00"])  # type: ignore[list-item]
+
+
+# FIN-43-R1: aggregation must be exact independent of ambient Decimal precision.
+# Bare Decimal `+` observes getcontext().prec (default 28) and silently rounds
+# valid long inputs; the regression below failed before the integer-scaled fix.
+def test_review_repro_cent_preserved_for_28_digit_whole() -> None:
+    import decimal
+
+    big = parse_amount("1000000000000000000000000000.00", currency="JOD", profile=EN)
+    cent = parse_amount("0.01", currency="JOD", profile=EN)
+    expected = Decimal("1000000000000000000000000000.01")
+    with decimal.localcontext() as ctx:
+        ctx.prec = 28
+        assert big.amount + cent.amount != expected  # documents the default-context trap
+    assert total_by_currency([big, cent]) == {"JOD": expected}
+    assert sum_same_currency([big, cent], currency="JOD") == expected
+    assert (big + cent).amount == expected
+
+
+def test_exact_long_sums_under_low_ambient_precision() -> None:
+    import decimal
+
+    pos = parse_amount("12345678901234567890123456789.12345", currency="JOD", profile=PLAIN)
+    tiny = parse_amount("0.00001", currency="JOD", profile=PLAIN)
+    neg = parse_amount("-9999999999999999999999999999.99", currency="JOD", profile=PLAIN)
+    neg_cent = parse_amount("-0.01", currency="JOD", profile=PLAIN)
+    with decimal.localcontext() as ctx:
+        ctx.prec = 10  # hostile ambient precision; helpers must stay exact anyway
+        assert sum_same_currency([pos, tiny], currency="JOD") == Decimal(
+            "12345678901234567890123456789.12346"
+        )
+        assert sum_same_currency([neg, neg_cent], currency="JOD") == Decimal(
+            "-10000000000000000000000000000.00"
+        )
+        assert (pos + tiny).amount == Decimal("12345678901234567890123456789.12346")
+        assert (neg + neg_cent).amount == Decimal("-10000000000000000000000000000.00")
+
+
+def test_exact_grouped_34_digit_parse_and_mixed_currency_totals() -> None:
+    import decimal
+
+    grouped = parse_amount("12,345,678,901,234,567,890,123,456,789.12345", currency="JOD", profile=EN)
+    assert grouped.amount == Decimal("12345678901234567890123456789.12345")
+    usd_big = parse_amount("98765432109876543210987654321.99", currency="USD", profile=PLAIN)
+    usd_cent = parse_amount("0.01", currency="USD", profile=PLAIN)
+    with decimal.localcontext() as ctx:
+        ctx.prec = 10
+        totals = total_by_currency([grouped, usd_big, usd_cent])
+    assert totals == {
+        "JOD": Decimal("12345678901234567890123456789.12345"),
+        "USD": Decimal("98765432109876543210987654322.00"),
+    }
+
+
+def test_exact_bulk_total_of_long_values() -> None:
+    import decimal
+
+    row = parse_amount("12345678901234567890.12", currency="JOD", profile=PLAIN)
+    with decimal.localcontext() as ctx:
+        ctx.prec = 10
+        assert sum_same_currency([row] * 100, currency="JOD") == Decimal("1234567890123456789012.00")
+
+
+# FIN-43-R2: ParsedMoney enforces invariants at construction, not just via the parser.
+def test_direct_construction_float_amount_rejected() -> None:
+    with pytest.raises(MoneyParseError) as exc:
+        ParsedMoney(raw="0.1", amount=0.1, currency="JOD")  # type: ignore[arg-type]
+    assert exc.value.code == "invalid_type"
+
+
+@pytest.mark.parametrize("raw", [100, 0, None, True, b"1.00", "1.00"])
+def test_direct_construction_non_decimal_amount_rejected(raw: object) -> None:
+    with pytest.raises(MoneyParseError) as exc:
+        ParsedMoney(raw="1.00", amount=raw, currency="JOD")  # type: ignore[arg-type]
+    assert exc.value.code == "invalid_type"
+
+
+@pytest.mark.parametrize("raw", [Decimal("NaN"), Decimal("-NaN"), Decimal("Infinity")])
+def test_direct_construction_non_finite_rejected(raw: Decimal) -> None:
+    with pytest.raises(MoneyParseError) as exc:
+        ParsedMoney(raw="bad", amount=raw, currency="JOD")
+    assert exc.value.code == "non_finite"
+
+
+@pytest.mark.parametrize("raw", ["", "   ", "JO", "JODD", "J0D", "12", None, 123])
+def test_direct_construction_invalid_currency_rejected(raw: object) -> None:
+    with pytest.raises(MoneyParseError) as exc:
+        ParsedMoney(raw="1.00", amount=Decimal("1.00"), currency=raw)  # type: ignore[arg-type]
+    assert exc.value.code == "invalid_currency"
+
+
+@pytest.mark.parametrize("raw", [123, None, 1.5, b"1.00"])
+def test_direct_construction_non_text_raw_rejected(raw: object) -> None:
+    with pytest.raises(MoneyParseError) as exc:
+        ParsedMoney(raw=raw, amount=Decimal("1.00"), currency="JOD")  # type: ignore[arg-type]
+    assert exc.value.code == "invalid_type"
+
+
+def test_direct_construction_blank_raw_rejected() -> None:
+    with pytest.raises(MoneyParseError) as exc:
+        ParsedMoney(raw="   ", amount=Decimal("1.00"), currency="JOD")
+    assert exc.value.code == "blank"
+
+
+def test_direct_construction_valid_canonicalizes_currency() -> None:
+    pm = ParsedMoney(raw="src cell A1", amount=Decimal("1.00"), currency="jod")
+    assert pm.currency == "JOD" and pm.is_derived is False
+
+
+# FIN-43-R3: public package entry point + derived-raw provenance marker.
+def test_package_entry_point_import() -> None:
+    import app.finance as pkg
+    from app.finance import parse_amount as via_package
+
+    assert "parse_amount" in pkg.__all__
+    pm = via_package("1,234.56", currency="JOD", profile=EN)
+    assert pm.amount == Decimal("1234.56") and pm.is_derived is False
+
+
+def test_derived_raw_marked_not_source_evidence() -> None:
+    a = parse_amount("10.00", currency="JOD", profile=EN)
+    b = parse_amount("0.01", currency="JOD", profile=EN)
+    derived = a + b
+    assert derived.is_derived is True
+    assert derived.amount == Decimal("10.01")
+    assert derived.raw != a.raw and derived.raw != b.raw  # expression, not source
+    assert a.is_derived is False and b.is_derived is False  # sources stay unmarked

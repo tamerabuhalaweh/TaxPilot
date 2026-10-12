@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { Button } from "../../../components/Button";
+import { Alert } from "../../../components/Alert";
 import { DemoBanner } from "../../../components/Preview";
 import { useLocale } from "../../../components/LocaleProvider";
 import { LocaleControls } from "../../../components/LocaleControls";
@@ -19,9 +20,12 @@ export default function NewReviewPage() {
   const { locale, setLocale } = useLocale();
   const [clients, setClients] = useState<{ id: string; name: string }[]>([]);
   const [clientId, setClientId] = useState("");
-  const [start, setStart] = useState("2026-01-01");
-  const [end, setEnd] = useState("2026-09-30");
   const demo = isDemoMode();
+  // Demo keeps illustrative prefill; connected mode requires explicit user
+  // input (SRS: future real context must never inherit synthetic dates).
+  const [start, setStart] = useState(demo ? "2026-01-01" : "");
+  const [end, setEnd] = useState(demo ? "2026-09-30" : "");
+  const periodInvalid = !demo && start !== "" && end !== "" && start > end;
 
   useEffect(() => {
     if (demo) {
@@ -77,13 +81,26 @@ export default function NewReviewPage() {
         </div>
         <div className="tp-field">
           <label htmlFor="nr-start">{t(locale, "review.periodStart")}</label>
-          <input id="nr-start" type="date" value={start} onChange={(e) => setStart(e.target.value)} />
+          <input
+            id="nr-start"
+            type="date"
+            required={!demo}
+            value={start}
+            onChange={(e) => setStart(e.target.value)}
+          />
         </div>
         <div className="tp-field">
           <label htmlFor="nr-end">{t(locale, "review.periodEnd")}</label>
-          <input id="nr-end" type="date" value={end} onChange={(e) => setEnd(e.target.value)} />
+          <input
+            id="nr-end"
+            type="date"
+            required={!demo}
+            value={end}
+            onChange={(e) => setEnd(e.target.value)}
+          />
         </div>
       </div>
+      {!demo && periodInvalid ? <Alert message={t(locale, "review.periodInvalid")} /> : null}
       <h2>{t(locale, "workspace.documents")}</h2>
       {sources.map((s) => (
         <div key={s.title} className="tp-card tp-source-card">

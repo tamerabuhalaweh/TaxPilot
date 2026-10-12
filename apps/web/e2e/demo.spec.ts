@@ -70,3 +70,84 @@ test("demo locale persists across navigation, reload, and mobile layout", async 
   );
   expect(overflow).toBeLessThanOrEqual(1);
 });
+
+test("demo review statuses are translated, never raw codes", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.getByText("In progress").first()).toBeVisible();
+  await page.getByRole("button", { name: "العربية" }).click();
+  await expect(page.getByText("قيد التنفيذ").first()).toBeVisible();
+  await expect(page.getByText("معتمدة").first()).toBeVisible();
+  await expect(page.getByText("in progress")).toHaveCount(0);
+  await expect(page.getByText("approved")).toHaveCount(0);
+});
+
+test("demo navigation highlights section parents on nested routes", async ({ page }) => {
+  await page.goto("/clients/demo-client-1");
+  await expect(page.getByRole("link", { name: "Clients", exact: true })).toHaveAttribute(
+    "aria-current",
+    "page"
+  );
+  await page.goto("/reviews/new");
+  await expect(page.getByRole("link", { name: "Reviews", exact: true })).toHaveAttribute(
+    "aria-current",
+    "page"
+  );
+  await page.goto("/");
+  await expect(page.getByRole("link", { name: "Dashboard", exact: true })).toHaveAttribute(
+    "aria-current",
+    "page"
+  );
+});
+
+test("demo tabs support arrow, home, and end keys with aria linkage", async ({ page }) => {
+  await page.goto("/clients/demo-client-1");
+  const documents = page.getByRole("tab", { name: "Documents" });
+  const findings = page.getByRole("tab", { name: "Findings" });
+  const reports = page.getByRole("tab", { name: "Reports" });
+  await expect(documents).toHaveAttribute("aria-selected", "false");
+  // Establish selection first (roving tabindex keeps focus on the selected tab).
+  await documents.click();
+  await expect(documents).toHaveAttribute("aria-selected", "true");
+  await page.keyboard.press("ArrowRight");
+  await expect(findings).toHaveAttribute("aria-selected", "true");
+  await page.keyboard.press("End");
+  await expect(reports).toHaveAttribute("aria-selected", "true");
+  await page.keyboard.press("Home");
+  await expect(page.getByRole("tab", { name: "Profile" })).toHaveAttribute("aria-selected", "true");
+  // Tab-panel linkage resolves to the visible panel.
+  const panelId = await reports.getAttribute("aria-controls");
+  await page.keyboard.press("End");
+  await expect(page.locator(`[id="${panelId}"]`)).toHaveAttribute("role", "tabpanel");
+});
+
+test("demo tabs keyboard works in RTL with mirrored arrows", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "العربية" }).click();
+  await page.goto("/clients/demo-client-1");
+  const docs = page.getByRole("tab", { name: "المستندات" });
+  const findings = page.getByRole("tab", { name: "الملاحظات" });
+  await docs.click();
+  await expect(docs).toHaveAttribute("aria-selected", "true");
+  await page.keyboard.press("ArrowLeft"); // forward in RTL
+  await expect(findings).toHaveAttribute("aria-selected", "true");
+  await page.keyboard.press("ArrowRight"); // back in RTL
+  await expect(docs).toHaveAttribute("aria-selected", "true");
+});
+
+test("demo reload keeps the truthful no-save message", async ({ page }) => {
+  await page.goto("/reviews/new");
+  const message = "selections are not saved";
+  await expect(page.getByText(message)).toBeVisible();
+  await page.reload();
+  await expect(page.getByText(message)).toBeVisible();
+});
+
+test("demo archived clients are inspectable via the status filter", async ({ page }) => {
+  await page.goto("/clients");
+  await expect(page.getByText("Amman Consulting Group")).toBeHidden();
+  await page.getByRole("button", { name: "Archived", exact: true }).click();
+  await expect(page.getByText("Amman Consulting Group")).toBeVisible();
+  await page.getByRole("button", { name: "All", exact: true }).click();
+  await expect(page.getByText("Example Trading LLC")).toBeVisible();
+  await expect(page.getByText("Amman Consulting Group")).toBeVisible();
+});

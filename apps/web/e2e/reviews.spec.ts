@@ -11,6 +11,26 @@ test("unauthenticated dashboard prompts sign-in, not an empty workspace", async 
   await expect(page.getByRole("link", { name: "Sign in" })).toBeVisible();
 });
 
+test("connected dashboard marks unavailable metrics, never zero KPIs", async ({ page }) => {
+  // Register + sign in through the real backend, then inspect the dashboard.
+  const email = `e2e-metrics-${Date.now()}@example.com`;
+  const password = "correct horse battery staple";
+  await page.goto("/login");
+  await page.getByRole("button", { name: "Need an account? Register" }).click();
+  await page.getByLabel("Email").fill(email);
+  await page.getByLabel("Password").fill(password);
+  await page.getByLabel("Firm name").fill("Metrics Co");
+  await page.getByRole("button", { name: "Create account", exact: true }).click();
+  await expect(page).toHaveURL("/");
+  // No review engine exists: every metric honestly reports unavailability.
+  await expect(page.getByText("Coming soon").first()).toBeVisible();
+  const stats = page.locator(".tp-stat-value");
+  await expect(stats).toHaveCount(4);
+  for (const cell of await stats.all()) {
+    await expect(cell).toHaveText("—");
+  }
+});
+
 test("backend failure shows a useful error state, not a hang", async ({ page }) => {
   await page.route("/api/**", (route) => route.abort());
   await page.goto("/");

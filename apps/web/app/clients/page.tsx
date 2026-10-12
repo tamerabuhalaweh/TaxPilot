@@ -28,11 +28,12 @@ interface Row {
   meta: string;
 }
 
-/** Clients: searchable table, create flow, detail links. */
+/** Clients: searchable table with status filter, create flow, detail links. */
 export default function ClientsPage() {
   const { locale, setLocale } = useLocale();
   const [rows, setRows] = useState<Row[]>([]);
   const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState<"active" | "archived" | "all">("active");
   const [name, setName] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [denied, setDenied] = useState(false);
@@ -60,7 +61,9 @@ export default function ClientsPage() {
 
   useEffect(() => {
     if (demo) {
-      setRows(DEMO_CLIENTS.map(toRow));
+      setRows(
+        DEMO_CLIENTS.filter((c) => filter === "all" || c.status === filter).map(toRow)
+      );
       return;
     }
     const ctrl = new AbortController();
@@ -68,7 +71,7 @@ export default function ClientsPage() {
       try {
         const [profile, all] = await Promise.all([
           fetchMe(ctrl.signal),
-          listClients().catch((err: unknown) => {
+          listClients(filter).catch((err: unknown) => {
             if (err instanceof ApiRequestError && err.status === 401) {
               setDenied(true);
               return [] as ClientPayload[];
@@ -84,10 +87,10 @@ export default function ClientsPage() {
     })();
     return () => ctrl.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [locale]);
+  }, [locale, filter]);
 
-  const visible = rows.filter(
-    (r) => r.status === "active" && r.name.toLowerCase().includes(query.trim().toLowerCase())
+  const visible = rows.filter((r) =>
+    r.name.toLowerCase().includes(query.trim().toLowerCase())
   );
 
   async function addClient(ev: React.FormEvent): Promise<void> {
@@ -127,6 +130,19 @@ export default function ClientsPage() {
       ) : (
         <>
           {error ? <Alert message={error} /> : null}
+          <div className="tp-actions" role="group" aria-label={t(locale, "clients.status")}>
+            {(
+              [
+                { value: "active", label: t(locale, "clients.filterActive") },
+                { value: "archived", label: t(locale, "clients.filterArchived") },
+                { value: "all", label: t(locale, "clients.filterAll") }
+              ] as const
+            ).map((option) => (
+              <Button key={option.value} type="button" disabled={filter === option.value} onClick={() => setFilter(option.value)}>
+                {option.label}
+              </Button>
+            ))}
+          </div>
           <div className="tp-field">
             <label htmlFor="client-search">{t(locale, "clients.search")}</label>
             <input

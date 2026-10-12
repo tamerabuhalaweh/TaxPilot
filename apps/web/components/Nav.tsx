@@ -12,14 +12,18 @@ const ITEMS = [
   { href: "/settings", key: "nav.settings" }
 ] as const;
 
-/** Primary navigation. Reviews/Reports/Settings have no backend yet and land on
- * honest preview-only screens rather than dead links. */
+/** Primary navigation. Nested routes highlight their section parent (e.g.
+/clients/123 highlights Clients); the dashboard is active at "/" only.
+ * Reviews/Reports/Settings have no backend yet and land on honest preview-only
+ * screens rather than dead links. */
 export function Nav({ locale }: { locale: Locale }) {
   const pathname = usePathname();
+  const isActive = (href: string): boolean =>
+    href === "/" ? pathname === "/" : pathname === href || pathname.startsWith(href + "/");
   return (
     <nav className="tp-nav" aria-label="primary">
       {ITEMS.map((item) => {
-        const active = pathname === item.href;
+        const active = isActive(item.href);
         return (
           <Link
             key={item.href}

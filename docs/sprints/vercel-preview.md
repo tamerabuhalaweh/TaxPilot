@@ -15,7 +15,7 @@ The agent cannot perform these; they need a Vercel account owner:
 
 1. **Upgrade from Hobby to Pro before any commercial use.** Vercel Authentication can protect all deployments, including production, on every plan — but Hobby is non-commercial per the Vercel plans documentation, so commercial TaxPilot deployment should use Pro. Do not publish anything sensitive before the plan and protection are in place.
 2. **Install the Vercel GitHub App** on `tamerabuhalaweh/TaxPilot` ✅ DONE (deployment statuses + preview comments appear on PRs; Actions checks preserved).
-3. **Import project** ✅ DONE: framework Next.js, **Root Directory = `apps/web`**, Node.js `22.x`. No `vercel.json` is committed on purpose — dashboard settings are the single source of truth for the monorepo root.
+3. **Import project** ✅ DONE except Node version: framework Next.js, **Root Directory = `apps/web`**. **Set Project → Settings → General → Node.js Version to `22.x`** to match the `engines` pin in `apps/web/package.json` (the project currently shows `24.x`; CI tests `22.x`, so align to avoid build/runtime drift). No `vercel.json` is committed on purpose — dashboard settings are the single source of truth for the monorepo root.
 4. **Environment variables** (Vercel dashboard → Project → Settings → Environment Variables; never in git) — OPEN, blocks the visual preview:
    - Preview scope: `NEXT_PUBLIC_PREVIEW_MODE=demo` (visual walkthrough, no backend needed). Do NOT set `API_INTERNAL_URL` for the visual-only demo.
    - Preview scope (connected staging, once §3 exists): `NEXT_PUBLIC_PREVIEW_MODE=connected` (or unset), `API_INTERNAL_URL=https://<staging-api-host>` (server-side only, never `NEXT_PUBLIC_`).

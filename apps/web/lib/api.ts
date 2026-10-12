@@ -128,8 +128,8 @@ export async function verifyAccount(token: string): Promise<void> {
   });
 }
 
-export async function listClients(): Promise<ClientPayload[]> {
-  return request<ClientPayload[]>("/api/v1/clients");
+export async function listClients(status: "active" | "archived" | "all" = "active"): Promise<ClientPayload[]> {
+  return request<ClientPayload[]>(`/api/v1/clients?status=${status}`);
 }
 
 export async function createClient(name: string): Promise<ClientPayload> {

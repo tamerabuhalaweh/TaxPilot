@@ -65,6 +65,27 @@ export default function DashboardPage() {
 
   const demo = isDemoMode();
   const firmName = demo ? (locale === "ar" ? DEMO_FIRM.nameAr : DEMO_FIRM.name) : me?.email.split("@")[0];
+  const activeReviews = demo ? DEMO_REVIEWS.filter((r) => r.status === "in_progress").length : 0;
+  const doneReviews = demo ? DEMO_REVIEWS.filter((r) => r.status === "approved").length : 0;
+  // Connected mode has no review engine yet: metrics are honestly unavailable,
+  // never a measured zero. Demo fixtures are explicitly synthetic (see banner).
+  const stats = demo
+    ? [
+        { label: t(locale, "dashboard.activeReviews"), value: String(activeReviews) },
+        { label: t(locale, "dashboard.awaitingAction"), value: "1" },
+        { label: t(locale, "dashboard.highPriority"), value: "0" },
+        { label: t(locale, "dashboard.recentlyCompleted"), value: String(doneReviews) }
+      ]
+    : [
+        { label: t(locale, "dashboard.activeReviews"), value: "—", hint: t(locale, "dashboard.comingSoon") },
+        { label: t(locale, "dashboard.awaitingAction"), value: "—", hint: t(locale, "dashboard.comingSoon") },
+        { label: t(locale, "dashboard.highPriority"), value: "—", hint: t(locale, "dashboard.comingSoon") },
+        {
+          label: t(locale, "dashboard.recentlyCompleted"),
+          value: "—",
+          hint: t(locale, "dashboard.comingSoon")
+        }
+      ];
   interface ClientRow {
     id: string;
     name: string;
@@ -81,8 +102,6 @@ export default function DashboardPage() {
     : clients
         .filter((c) => c.status === "active")
         .map((c) => ({ id: c.id, name: c.name, detail: c.sector ?? "—", count: 0 }));
-  const activeReviews = demo ? DEMO_REVIEWS.filter((r) => r.status === "in_progress").length : 0;
-  const doneReviews = demo ? DEMO_REVIEWS.filter((r) => r.status === "approved").length : 0;
 
   return (
     <main>
@@ -117,10 +136,9 @@ export default function DashboardPage() {
           </div>
 
           <div className="tp-stats">
-            <StatCard label={t(locale, "dashboard.activeReviews")} value={String(activeReviews)} />
-            <StatCard label={t(locale, "dashboard.awaitingAction")} value={demo ? "1" : "0"} />
-            <StatCard label={t(locale, "dashboard.highPriority")} value="0" />
-            <StatCard label={t(locale, "dashboard.recentlyCompleted")} value={String(doneReviews)} />
+            {stats.map((s) => (
+              <StatCard key={s.label} label={s.label} value={s.value} hint={"hint" in s ? s.hint : undefined} />
+            ))}
           </div>
 
           <h2>{t(locale, "dashboard.clientsOverview")}</h2>
@@ -179,7 +197,8 @@ export default function DashboardPage() {
                       <td>{locale === "ar" ? r.clientNameAr : r.clientName}</td>
                       <td className="tp-num">{r.period}</td>
                       <td>
-                        <StatusPill label={locale === "ar" ? r.typeAr : r.type} /> {r.status.replaceAll("_", " ")}
+                        <StatusPill label={locale === "ar" ? r.typeAr : r.type} />{" "}
+                        {t(locale, `review.status.${r.status}`)}
                       </td>
                     </tr>
                   ))}

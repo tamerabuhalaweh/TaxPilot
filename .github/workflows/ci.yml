@@ -82,11 +82,18 @@ jobs:
         run: |
           python - <<'EOF'
           import psycopg
-          conn = psycopg.connect("host=localhost dbname=taxpilot user=taxpilot password=taxpilot", connect_timeout=10)
-          conn.autocommit = True
-          conn.execute("CREATE DATABASE taxpayer_test")
-          conn.close()
-          print("disposable destructive-test database created: taxpayer_test")
+          admin = psycopg.connect("host=localhost dbname=taxpilot user=taxpilot password=taxpilot", connect_timeout=10)
+          admin.autocommit = True
+          exists = admin.execute("SELECT 1 FROM pg_database WHERE datname = 'taxpilot_test'").fetchone()
+          if not exists:
+              admin.execute("CREATE DATABASE taxpayer_test")
+          admin.commit()
+          admin.close()
+          # Verify on a FRESH connection (fail loudly here, not deep in pytest).
+          probe = psycopg.connect("host=localhost dbname=taxpilot_test user=taxpilot password=taxpilot", connect_timeout=10)
+          probe.execute("SELECT 1")
+          probe.close()
+          print("disposable destructive-test database verified: taxpayer_test")
           EOF
       - name: "Migration + queue + API integration (services required: failures fail, never skip)"
         env:

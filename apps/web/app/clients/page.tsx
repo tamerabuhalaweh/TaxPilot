@@ -100,7 +100,10 @@ export default function ClientsPage() {
     setError(null);
     try {
       const created = await createClient(name.trim());
-      setRows((prev) => [...prev, toRow(created)]);
+      // New clients are always active: show the Active filter so the created
+      // record is visible instead of appending it to an archived list.
+      setFilter("active");
+      setRows((prev) => [...prev.filter((r) => r.id !== created.id), toRow(created)]);
       setName("");
     } catch (err) {
       setError(err instanceof ApiRequestError ? err.message : "Could not create client.");

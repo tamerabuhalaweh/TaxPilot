@@ -90,18 +90,19 @@ export default function DashboardPage() {
     id: string;
     name: string;
     detail: string;
-    count: number;
+    count: string;
   }
   const shownClients: ClientRow[] = demo
     ? DEMO_CLIENTS.filter((c) => c.status === "active").map((c) => ({
         id: c.id,
         name: locale === "ar" ? c.nameAr : c.name,
         detail: locale === "ar" ? c.sectorAr : c.sector,
-        count: c.activeReviews
+        count: String(c.activeReviews)
       }))
     : clients
         .filter((c) => c.status === "active")
-        .map((c) => ({ id: c.id, name: c.name, detail: c.sector ?? "—", count: 0 }));
+        // No review engine exists: per-client counts are unavailable, never zero.
+        .map((c) => ({ id: c.id, name: c.name, detail: c.sector ?? "—", count: "—" }));
 
   return (
     <main>

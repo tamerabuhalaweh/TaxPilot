@@ -120,6 +120,20 @@ test("demo tabs support arrow, home, and end keys with aria linkage", async ({ p
   await expect(page.locator(`[id="${panelId}"]`)).toHaveAttribute("role", "tabpanel");
 });
 
+test("demo tabs wrap selection and focus together at boundaries", async ({ page }) => {
+  await page.goto("/clients/demo-client-1");
+  const profile = page.getByRole("tab", { name: "Profile" });
+  const reports = page.getByRole("tab", { name: "Reports" });
+  await reports.click();
+  await expect(reports).toHaveAttribute("aria-selected", "true");
+  await page.keyboard.press("ArrowRight"); // wraps last -> first
+  await expect(profile).toHaveAttribute("aria-selected", "true");
+  await expect(profile).toBeFocused();
+  await page.keyboard.press("ArrowLeft"); // wraps first -> last
+  await expect(reports).toHaveAttribute("aria-selected", "true");
+  await expect(reports).toBeFocused();
+});
+
 test("demo tabs keyboard works in RTL with mirrored arrows", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("button", { name: "العربية" }).click();
@@ -130,8 +144,10 @@ test("demo tabs keyboard works in RTL with mirrored arrows", async ({ page }) =>
   await expect(docs).toHaveAttribute("aria-selected", "true");
   await page.keyboard.press("ArrowLeft"); // forward in RTL
   await expect(findings).toHaveAttribute("aria-selected", "true");
+  await expect(findings).toBeFocused();
   await page.keyboard.press("ArrowRight"); // back in RTL
   await expect(docs).toHaveAttribute("aria-selected", "true");
+  await expect(docs).toBeFocused();
 });
 
 test("demo reload keeps the truthful no-save message", async ({ page }) => {

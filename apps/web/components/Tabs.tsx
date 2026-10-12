@@ -17,10 +17,13 @@ export function Tabs({ tabs }: { tabs: { id: string; label: string; content: Rea
   const buttons = useRef<(HTMLButtonElement | null)[]>([]);
 
   function select(index: number, focus: boolean): void {
-    const tab = tabs[(index + tabs.length) % tabs.length];
+    // Normalize ONCE: selection and keyboard focus must always land together,
+    // including across the wrap boundary (last→first, first→last).
+    const normalized = ((index % tabs.length) + tabs.length) % tabs.length;
+    const tab = tabs[normalized];
     if (!tab) return;
     setActive(tab.id);
-    if (focus) buttons.current[index]?.focus();
+    if (focus) buttons.current[normalized]?.focus();
   }
 
   function activeIndex(): number {

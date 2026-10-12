@@ -20,10 +20,15 @@ test("register, manage a client, sign out and back in", async ({ page }) => {
 
   await page.getByRole("link", { name: "Clients", exact: true }).click();
   await expect(page).toHaveURL("/clients");
+  // Creating while viewing Archived resets to Active so the new record is visible.
+  await page.getByRole("button", { name: "Archived", exact: true }).click();
   await page.getByLabel("New client name").fill("E2E Client");
   await page.getByRole("button", { name: "Add Client" }).click();
   await expect(page.getByText("E2E Client")).toBeVisible();
   await page.getByRole("link", { name: "Dashboard" }).click();
+  // Per-client counts are unavailable without a review engine: the row shows
+  // an em-dash, never a fabricated zero.
+  await expect(page.getByRole("row", { name: /E2E Client/ })).toContainText("—");
 
   await page.getByRole("button", { name: "Sign out" }).click();
   await expect(page).toHaveURL(/\/login/);

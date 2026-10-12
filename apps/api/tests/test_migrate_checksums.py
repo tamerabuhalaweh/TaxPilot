@@ -1,8 +1,18 @@
 """Migration-manifest unit tests: no database required (checksum verification
 happens before any connection), so these run everywhere including plain CI."""
 
+import sys
+from pathlib import Path
+
 import pytest
-from db.migrate import discover, load_checksums, migrate
+
+# Backend CI runs with PYTHONPATH=apps/api (repo root not importable); resolve
+# db.migrate from the repository layout instead of relying on CWD.
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from db.migrate import discover, load_checksums, migrate  # noqa: E402
 
 
 def test_manifest_covers_all_versions():

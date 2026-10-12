@@ -1,15 +1,18 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Alert } from "../../components/Alert";
 import { Button } from "../../components/Button";
+import { DemoBanner } from "../../components/Preview";
 import { ApiRequestError, login, register, verifyAccount } from "../../lib/api";
-import { dirOf, t, type Locale } from "../../lib/i18n";
+import { t } from "../../lib/i18n";
+import { isDemoMode } from "../../lib/preview";
+import { useLocale } from "../../components/LocaleProvider";
 
 /** Sign-in / registration. One primary action per mode; server errors shown plainly. */
 export default function LoginPage() {
-  const [locale, setLocale] = useState<Locale>("en");
+  const { locale, setLocale } = useLocale();
   const [mode, setMode] = useState<"login" | "register">("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -17,11 +20,6 @@ export default function LoginPage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-
-  useEffect(() => {
-    document.documentElement.lang = locale;
-    document.documentElement.dir = dirOf(locale);
-  }, [locale]);
 
   async function submit(ev: React.FormEvent): Promise<void> {
     ev.preventDefault();
@@ -58,6 +56,7 @@ export default function LoginPage() {
         <Link href="/">← {t(locale, "auth.back")}</Link>
       </p>
       <h1>{mode === "login" ? t(locale, "auth.signin") : t(locale, "auth.createAccount")}</h1>
+      <DemoBanner locale={locale} />
       <div className="tp-actions" role="group" aria-label="locale">
         <Button onClick={() => setLocale("en")} disabled={locale === "en"}>
           English
@@ -66,60 +65,75 @@ export default function LoginPage() {
           العربية
         </Button>
       </div>
-      {error ? <Alert message={error} /> : null}
-      {notice ? (
+      {isDemoMode() ? (
         <div className="tp-card" role="status">
-          {notice}
+          <p>{t(locale, "demo.authDisabled")}</p>
+          <div className="tp-actions">
+            <Link href="/" className="tp-primary">
+              {t(locale, "demo.explore")}
+            </Link>
+          </div>
         </div>
-      ) : null}
-      <form onSubmit={submit}>
-        <p>
-          <label>
-            {t(locale, "auth.email")}
-            <br />
-            <input
-              type="email"
-              autoComplete="email"
-              required
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-            />
-          </label>
-        </p>
-        <p>
-          <label>
-            {t(locale, "auth.password")}
-            <br />
-            <input
-              type="password"
-              autoComplete={mode === "login" ? "current-password" : "new-password"}
-              required
-              minLength={12}
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-            />
-          </label>
-        </p>
-        {mode === "register" ? (
-          <p>
-            <label>
-              {t(locale, "auth.firmName")}
-              <br />
-              <input required value={firm} onChange={(e) => setFirm(e.target.value)} />
-            </label>
-          </p>
-        ) : null}
-        <div className="tp-actions">
-          <Button type="submit" disabled={busy}>
-            {mode === "login" ? t(locale, "auth.signin") : t(locale, "auth.createAccount")}
-          </Button>
-        </div>
-      </form>
-      <div className="tp-actions">
-        <Button type="button" disabled={busy} onClick={() => setMode(mode === "login" ? "register" : "login")}>
-          {mode === "login" ? t(locale, "auth.needAccount") : t(locale, "auth.haveAccount")}
-        </Button>
-      </div>
+      ) : (
+        <>
+          {error ? <Alert message={error} /> : null}
+          {notice ? (
+            <div className="tp-card" role="status">
+              {notice}
+            </div>
+          ) : null}
+          <form onSubmit={submit}>
+            <p>
+              <label>
+                {t(locale, "auth.email")}
+                <br />
+                <input
+                  type="email"
+                  autoComplete="email"
+                  required
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                />
+              </label>
+            </p>
+            <p>
+              <label>
+                {t(locale, "auth.password")}
+                <br />
+                <input
+                  type="password"
+                  autoComplete={mode === "login" ? "current-password" : "new-password"}
+                  required
+                  minLength={12}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                />
+              </label>
+            </p>
+            {mode === "register" ? (
+              <p>
+                <label>
+                  {t(locale, "auth.firmName")}
+                  <br />
+                  <input required value={firm} onChange={(e) => setFirm(e.target.value)} />
+                </label>
+              </p>
+            ) : null}
+            <div className="tp-actions">
+              <Button type="submit" disabled={busy}>
+                {mode === "login" ? t(locale, "auth.signin") : t(locale, "auth.createAccount")}
+              </Button>
+            </div>
+          </form>
+          <div className="tp-actions">
+            <Button type="button" disabled={busy} onClick={() => setMode(mode === "login" ? "register" : "login")}>
+              {mode === "login" ? t(locale, "auth.needAccount") : t(locale, "auth.haveAccount")}
+            </Button>
+          </div>
+        </>
+      )}
     </main>
   );
 }
+
+

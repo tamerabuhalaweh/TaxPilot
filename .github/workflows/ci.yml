@@ -174,8 +174,39 @@ jobs:
           echo $! > /tmp/tp-web.pid
           sleep 12
           curl -fsS http://127.0.0.1:3000/api/v1/health
-          npx playwright test
+          npx playwright test e2e/auth.spec.ts e2e/reviews.spec.ts e2e/proxy.spec.ts
           kill "$(cat /tmp/tp-api.pid)" "$(cat /tmp/tp-web.pid)"
+
+  browser-demo:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - name: Install frontend + Playwright browsers
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+      - name: Build demo configuration (no backend)
+        run: npm run build
+        env:
+          NEXT_PUBLIC_PREVIEW_MODE: demo
+      - name: Demo smoke (banner, clients, review, RTL persistence, disabled ops)
+        env:
+          E2E_BASE_URL: http://127.0.0.1:3001
+        run: |
+          npm start -- --port 3001 &
+          echo $! > /tmp/tp-demo.pid
+          sleep 12
+          curl -fsS http://127.0.0.1:3001/
+          npx playwright test e2e/demo.spec.ts
+          kill "$(cat /tmp/tp-demo.pid)"
 
   security:
     runs-on: ubuntu-latest

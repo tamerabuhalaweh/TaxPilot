@@ -1,0 +1,6 @@
+# version sha256 filename - regenerate on any approved migration change
+
+0001  b5e584c6e27208fbe9471f30855875116d610174d77e642bfa9ba163e2317966  0001_schema_migrations.sql
+0002  292b145d7e008b45e0913afc9c8b146380924af40fab0b8ca6890d66fa28bd8a  0002_auth_tenancy_clients.sql
+0003  87fc9f95df5f2a2fac7576f7e9dd11856654cc19c273fb984e397fd0854b9170  0003_session_csrf.sql
+0004  4c859116d45bb34e729c87b566efd4ca8090ba8c758c83d7da16f11401f6f2f5  0004_jurisdiction_foundation.sql

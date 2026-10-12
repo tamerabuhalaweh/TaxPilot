@@ -12,8 +12,22 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import Boolean, Column, DateTime, MetaData, Table, Text, insert, select, text, update
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy import (
+    Boolean,
+    Column,
+    Date,
+    DateTime,
+    Integer,
+    LargeBinary,
+    MetaData,
+    Table,
+    Text,
+    insert,
+    select,
+    text,
+    update,
+)
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 
 metadata = MetaData()
 
@@ -114,6 +128,100 @@ audit = Table(
     Column("created_at", DateTime(timezone=True), nullable=False),
 )
 
+# -- JUR-01 Phase 1 jurisdiction tables (migration 0004; no presences/groups) --
+jurisdictions = Table(
+    "jurisdiction_catalog",
+    metadata,
+    Column("code", Text, primary_key=True),
+    Column("name_en", Text, nullable=False),
+    Column("name_ar", Text, nullable=False),
+    Column("availability", Text, nullable=False),
+    Column("release_pack_version", Text),
+    Column("capabilities", JSONB, nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+)
+
+legal_entities = Table(
+    "legal_entities",
+    metadata,
+    Column("id", UUID(as_uuid=True), primary_key=True),
+    Column("tenant_id", UUID(as_uuid=True), nullable=False),
+    Column("client_id", UUID(as_uuid=True), nullable=False),
+    Column("legal_name", Text, nullable=False),
+    Column("incorporation_country_code", Text, nullable=False),
+    Column("entity_type", Text, nullable=False),
+    Column("legal_identifier_ciphertext", LargeBinary),
+    Column("base_currency", Text, nullable=False),
+    Column("fiscal_start", Text, nullable=False),
+    Column("parent_legal_entity_id", UUID(as_uuid=True)),
+    Column("status", Text, nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+)
+
+obligations = Table(
+    "tax_obligation_profiles",
+    metadata,
+    Column("id", UUID(as_uuid=True), primary_key=True),
+    Column("tenant_id", UUID(as_uuid=True), nullable=False),
+    Column("client_id", UUID(as_uuid=True), nullable=False),
+    Column("jurisdiction_code", Text, nullable=False),
+    Column("tax_type_code", Text, nullable=False),
+    Column("regime_code", Text),
+    Column("valid_from", Date, nullable=False),
+    Column("valid_to", Date),
+    Column("registration_status", Text, nullable=False),
+    Column("verified_by", UUID(as_uuid=True)),
+    Column("verified_at", DateTime(timezone=True)),
+    Column("source_ref", Text),
+    Column("version", Integer, nullable=False),
+    Column("status", Text, nullable=False),
+)
+
+registrations = Table(
+    "tax_registrations",
+    metadata,
+    Column("id", UUID(as_uuid=True), primary_key=True),
+    Column("tenant_id", UUID(as_uuid=True), nullable=False),
+    Column("obligation_profile_id", UUID(as_uuid=True), nullable=False),
+    Column("authority_code", Text, nullable=False),
+    Column("registration_kind", Text, nullable=False),
+    Column("number_ciphertext", LargeBinary),
+    Column("number_nonce", LargeBinary),
+    Column("number_last4", Text),
+    Column("key_id", Text),
+    Column("alg_version", Text, nullable=False),
+    Column("starts_on", Date),
+    Column("ends_on", Date),
+    Column("status", Text, nullable=False),
+    Column("version", Integer, nullable=False),
+)
+
+tax_contexts = Table(
+    "tax_contexts",
+    metadata,
+    Column("id", UUID(as_uuid=True), primary_key=True),
+    Column("tenant_id", UUID(as_uuid=True), nullable=False),
+    Column("client_id", UUID(as_uuid=True), nullable=False),
+    Column("subject_kind", Text, nullable=False),
+    Column("subject_entity_id", UUID(as_uuid=True)),
+    Column("subject_group_id", UUID(as_uuid=True)),
+    Column("obligation_profile_id", UUID(as_uuid=True)),
+    Column("jurisdiction_code", Text, nullable=False),
+    Column("tax_type_code", Text, nullable=False),
+    Column("regime_code", Text),
+    Column("period_start", Date, nullable=False),
+    Column("period_end", Date, nullable=False),
+    Column("profile_version", Integer),
+    Column("context_revision", Integer, nullable=False),
+    Column("pack_version", Text),
+    Column("confirmation_status", Text, nullable=False),
+    Column("context_hash", Text),
+    Column("snapshot", JSONB),
+    Column("confirmed_by", UUID(as_uuid=True)),
+    Column("confirmed_at", DateTime(timezone=True)),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+)
+
 TABLES: dict[str, Table] = {
     "tenants": tenants,
     "users": users,
@@ -123,6 +231,11 @@ TABLES: dict[str, Table] = {
     "email_verifications": verifications,
     "clients": clients,
     "audit_events": audit,
+    "jurisdiction_catalog": jurisdictions,
+    "legal_entities": legal_entities,
+    "tax_obligation_profiles": obligations,
+    "tax_registrations": registrations,
+    "tax_contexts": tax_contexts,
 }
 
 
@@ -138,6 +251,10 @@ def assert_schema_matches(engine) -> None:  # type: ignore[no-untyped-def]
         "Text": "text",
         "Boolean": "boolean",
         "DateTime": "timestamp with time zone",
+        "Date": "date",
+        "Integer": "integer",
+        "LargeBinary": "bytea",
+        "JSONB": "jsonb",
     }
     with engine.connect() as conn:
         for name, table in TABLES.items():

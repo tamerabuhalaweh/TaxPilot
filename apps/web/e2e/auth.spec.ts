@@ -18,9 +18,12 @@ test("register, manage a client, sign out and back in", async ({ page }) => {
   await expect(page).toHaveURL("/");
   await expect(page.getByText(email)).toBeVisible();
 
+  await page.getByRole("link", { name: "Clients", exact: true }).click();
+  await expect(page).toHaveURL("/clients");
   await page.getByLabel("New client name").fill("E2E Client");
   await page.getByRole("button", { name: "Add Client" }).click();
   await expect(page.getByText("E2E Client")).toBeVisible();
+  await page.getByRole("link", { name: "Dashboard" }).click();
 
   await page.getByRole("button", { name: "Sign out" }).click();
   await expect(page).toHaveURL(/\/login/);

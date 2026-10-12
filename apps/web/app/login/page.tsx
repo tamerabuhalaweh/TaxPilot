@@ -4,8 +4,10 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { Alert } from "../../components/Alert";
 import { Button } from "../../components/Button";
+import { DemoBanner } from "../../components/Preview";
 import { ApiRequestError, login, register, verifyAccount } from "../../lib/api";
 import { dirOf, t, type Locale } from "../../lib/i18n";
+import { isDemoMode } from "../../lib/preview";
 
 /** Sign-in / registration. One primary action per mode; server errors shown plainly. */
 export default function LoginPage() {
@@ -58,6 +60,17 @@ export default function LoginPage() {
         <Link href="/">← {t(locale, "auth.back")}</Link>
       </p>
       <h1>{mode === "login" ? t(locale, "auth.signin") : t(locale, "auth.createAccount")}</h1>
+      <DemoBanner locale={locale} />
+      {isDemoMode() ? (
+        <div className="tp-card" role="status">
+          <p>{t(locale, "demo.authDisabled")}</p>
+          <div className="tp-actions">
+            <Link href="/" className="tp-primary">
+              {t(locale, "demo.explore")}
+            </Link>
+          </div>
+        </div>
+      ) : null}
       <div className="tp-actions" role="group" aria-label="locale">
         <Button onClick={() => setLocale("en")} disabled={locale === "en"}>
           English

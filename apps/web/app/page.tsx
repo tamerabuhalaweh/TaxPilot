@@ -4,22 +4,33 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { Alert } from "../components/Alert";
 import { Button } from "../components/Button";
-import { EmptyState } from "../components/EmptyState";
+import { DemoBanner, PreviewOnly } from "../components/Preview";
+import { LocaleControls } from "../components/LocaleControls";
+import { Nav } from "../components/Nav";
+import { StatCard } from "../components/StatCard";
 import { StatusPill } from "../components/StatusPill";
-import { ApiRequestError, createClient, fetchHealth, fetchMe, listClients, logout, type ClientPayload, type MePayload } from "../lib/api";
+import { EmptyState } from "../components/EmptyState";
+import {
+  ApiRequestError,
+  fetchHealth,
+  fetchMe,
+  listClients,
+  logout,
+  type ClientPayload,
+  type MePayload
+} from "../lib/api";
+import { DEMO_CLIENTS, DEMO_FIRM, DEMO_REVIEWS } from "../lib/demo-data";
 import { dirOf, t, type Locale } from "../lib/i18n";
+import { isDemoMode } from "../lib/preview";
 
 type LoadState = "checking" | "down" | "signed-out" | "ready";
 
-/** Dashboard: backend status, session gate, clients slice. No mock data anywhere. */
+/** Firm dashboard: navigation, firm overview, clients, and review status. */
 export default function DashboardPage() {
   const [locale, setLocale] = useState<Locale>("en");
   const [state, setState] = useState<LoadState>("checking");
   const [me, setMe] = useState<MePayload | null>(null);
   const [clients, setClients] = useState<ClientPayload[]>([]);
-  const [name, setName] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     document.documentElement.lang = locale;
@@ -27,6 +38,10 @@ export default function DashboardPage() {
   }, [locale]);
 
   useEffect(() => {
+    if (isDemoMode()) {
+      setState("ready");
+      return;
+    }
     const ctrl = new AbortController();
     (async () => {
       try {
@@ -47,95 +62,139 @@ export default function DashboardPage() {
     return () => ctrl.abort();
   }, []);
 
-  async function addClient(ev: React.FormEvent): Promise<void> {
-    ev.preventDefault();
-    setBusy(true);
-    setError(null);
-    try {
-      const created = await createClient(name.trim());
-      setClients((prev) => [...prev, created]);
-      setName("");
-    } catch (err) {
-      setError(err instanceof ApiRequestError ? err.message : "Could not create client.");
-    } finally {
-      setBusy(false);
-    }
-  }
-
   async function signOut(): Promise<void> {
     await logout();
     window.location.href = "/login";
   }
 
+  const demo = isDemoMode();
+  const firmName = demo ? (locale === "ar" ? DEMO_FIRM.nameAr : DEMO_FIRM.name) : me?.email.split("@")[0];
+  interface ClientRow {
+    id: string;
+    name: string;
+    detail: string;
+    count: number;
+  }
+  const shownClients: ClientRow[] = demo
+    ? DEMO_CLIENTS.filter((c) => c.status === "active").map((c) => ({
+        id: c.id,
+        name: locale === "ar" ? c.nameAr : c.name,
+        detail: locale === "ar" ? c.sectorAr : c.sector,
+        count: c.activeReviews
+      }))
+    : clients
+        .filter((c) => c.status === "active")
+        .map((c) => ({ id: c.id, name: c.name, detail: c.sector ?? "—", count: 0 }));
+  const activeReviews = demo ? DEMO_REVIEWS.filter((r) => r.status === "in_progress").length : 0;
+  const doneReviews = demo ? DEMO_REVIEWS.filter((r) => r.status === "approved").length : 0;
+
   return (
     <main>
+      <div className="tp-topbar">
+        <Link href="/" className="tp-brand">
+          TaxPilot
+        </Link>
+        <Nav locale={locale} />
+        <LocaleControls locale={locale} onChange={setLocale} />
+      </div>
+      <DemoBanner locale={locale} />
       <p className="tp-muted">{t(locale, "app.tagline")}</p>
       <h1>{t(locale, "dashboard.title")}</h1>
-      <div className="tp-actions" role="group" aria-label="locale">
-        <Button onClick={() => setLocale("en")} disabled={locale === "en"}>
-          English
-        </Button>
-        <Button onClick={() => setLocale("ar")} disabled={locale === "ar"}>
-          العربية
-        </Button>
-      </div>
 
-      {state === "checking" && (
-        <div className="tp-actions">
-          <StatusPill label={t(locale, "health.checking")} />
-        </div>
-      )}
-      {state === "down" && (
-        <div className="tp-actions">
-          <Alert message={t(locale, "health.backendDown")} />
-        </div>
-      )}
-      {state === "signed-out" && (
+      {state === "checking" && <StatusPill label={t(locale, "health.checking")} />}
+      {state === "down" && <Alert message={t(locale, "health.backendDown")} />}
+      {state === "signed-out" && !demo && (
         <div className="tp-actions">
           <EmptyState title={t(locale, "dashboard.signinRequired")} hint={t(locale, "dashboard.signinRequiredHint")} />
-          <Link href="/login" className="tp-primary"> {t(locale, "dashboard.signin")} </Link>
+          <Link href="/login" className="tp-primary">
+            {t(locale, "dashboard.signin")}
+          </Link>
         </div>
       )}
-      {state === "ready" && me ? (
+
+      {(state === "ready" || (demo && state !== "down")) && (
         <>
+          {firmName ? <h2>{firmName}</h2> : null}
           <div className="tp-actions">
-            <StatusPill label={t(locale, "health.backendUp")} />
-            <StatusPill label={`${me.email} · ${me.memberships[0]?.role ?? "member"}`} />
+            <StatusPill label={demo ? t(locale, "preview.only") : t(locale, "health.backendUp")} />
+            {!demo && me ? <StatusPill label={`${me.email} · ${me.memberships[0]?.role ?? "member"}`} /> : null}
           </div>
-          <h2>{t(locale, "dashboard.clients")}</h2>
-          {error ? <Alert message={error} /> : null}
-          {clients.length === 0 ? (
-            <EmptyState title={t(locale, "dashboard.newReview")} hint={t(locale, "dashboard.empty")} />
+
+          <div className="tp-stats">
+            <StatCard label={t(locale, "dashboard.activeReviews")} value={String(activeReviews)} />
+            <StatCard label={t(locale, "dashboard.awaitingAction")} value={demo ? "1" : "0"} />
+            <StatCard label={t(locale, "dashboard.highPriority")} value="0" />
+            <StatCard label={t(locale, "dashboard.recentlyCompleted")} value={String(doneReviews)} />
+          </div>
+
+          <h2>{t(locale, "dashboard.clientsOverview")}</h2>
+          {shownClients.length === 0 ? (
+            <EmptyState title={t(locale, "dashboard.clients")} hint={t(locale, "dashboard.noClients")} />
           ) : (
-            <ul>
-              {clients.map((c) => (
-                <li key={c.id}>
-                  {c.name} <span className="tp-muted">({c.status})</span>
-                </li>
-              ))}
-            </ul>
-          )}
-          <form onSubmit={addClient}>
-            <p>
-              <label>
-                {t(locale, "dashboard.newClientName")}
-                <br />
-                <input required maxLength={200} value={name} onChange={(e) => setName(e.target.value)} />
-              </label>
-            </p>
-            <div className="tp-actions">
-              <Button type="submit" disabled={busy || name.trim() === ""}> {t(locale, "dashboard.addClient")} </Button>
+            <div className="tp-table-wrap">
+              <table className="tp-table">
+                <thead>
+                  <tr>
+                    <th>{t(locale, "clients.name")}</th>
+                    <th>{t(locale, "clients.sector")}</th>
+                    <th>{t(locale, "dashboard.activeReviews")}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {shownClients.map((c) => (
+                    <tr key={c.id}>
+                      <td>{c.name}</td>
+                      <td>{c.detail}</td>
+                      <td className="tp-num">{c.count}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
-          </form>
+          )}
           <div className="tp-actions">
+            <Link href="/clients" className="tp-primary">
+              {t(locale, "dashboard.viewAllClients")}
+            </Link>
             <Link href="/reviews/new" className="tp-primary">
               {t(locale, "dashboard.newReview")}
             </Link>
-            <Button type="button" onClick={signOut}> {t(locale, "dashboard.signout")} </Button>
+            {!demo ? (
+              <Button type="button" onClick={signOut}>
+                {t(locale, "dashboard.signout")}
+              </Button>
+            ) : null}
           </div>
+
+          <h2>{t(locale, "dashboard.reviewsTitle")}</h2>
+          {demo ? (
+            <div className="tp-table-wrap">
+              <table className="tp-table">
+                <thead>
+                  <tr>
+                    <th>{t(locale, "clients.name")}</th>
+                    <th>{t(locale, "review.periodStart")} – {t(locale, "review.periodEnd")}</th>
+                    <th>{t(locale, "clients.status")}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {DEMO_REVIEWS.map((r) => (
+                    <tr key={r.id}>
+                      <td>{locale === "ar" ? r.clientNameAr : r.clientName}</td>
+                      <td className="tp-num">{r.period}</td>
+                      <td>
+                        <StatusPill label={locale === "ar" ? r.typeAr : r.type} /> {r.status.replaceAll("_", " ")}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <PreviewOnly locale={locale} />
+          )}
         </>
-      ) : null}
+      )}
     </main>
   );
 }
-

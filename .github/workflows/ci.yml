@@ -75,9 +75,54 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r apps/api/requirements.txt -r apps/api/requirements-dev.txt
+      # TEST-SAFETY-01: destructive integration tests run ONLY against this
+      # freshly created disposable database — never the primary service DB.
+      # (psycopg is used instead of the psql CLI so no client binaries are needed.)
+      - name: Create disposable destructive-test database
+        run: |
+          python - <<'EOF'
+          import socket
+          import time
+
+          import psycopg
+
+          # NOTE: the disposable database is deliberately NOT named
+          # "taxpilot_test": that exact name proved unconnectable right after
+          # a successful CREATE on two independent postgres:16 instances
+          # (local container + CI service) while sibling names connect fine.
+          # Root cause unknown; the guard accepts any designated *_test name.
+          DBNAME = "tpx_ci_test"
+          print("localhost resolves to:", socket.getaddrinfo("localhost", 5432))
+          admin = psycopg.connect("host=localhost dbname=taxpilot user=taxpilot password=taxpilot", connect_timeout=10)
+          admin.autocommit = True
+          before = sorted(r[0] for r in admin.execute("SELECT datname FROM pg_database WHERE NOT datistemplate").fetchall())
+          print("databases before:", before)
+          if DBNAME not in before:
+              admin.execute(f"CREATE DATABASE {DBNAME}")
+              print("CREATE DATABASE issued")
+          after = sorted(r[0] for r in admin.execute("SELECT datname FROM pg_database WHERE NOT datistemplate").fetchall())
+          print("databases after (same connection):", after)
+          admin.close()
+          # Verify on FRESH connections with retries (fail loudly here, not deep in pytest).
+          for attempt in range(5):
+              try:
+                  probe = psycopg.connect(f"host=localhost dbname={DBNAME} user=taxpilot password=taxpilot", connect_timeout=10)
+                  probe.execute("SELECT 1")
+                  probe.close()
+                  print(f"probe ok on attempt {attempt}")
+                  break
+              except Exception as exc:
+                  print(f"probe attempt {attempt} failed: {exc}")
+                  time.sleep(3)
+          else:
+              raise SystemExit("disposable test database never became visible")
+          print(f"disposable destructive-test database verified: {DBNAME}")
+          EOF
       - name: "Migration + queue + API integration (services required: failures fail, never skip)"
         env:
           DATABASE_URL: postgresql+psycopg://taxpilot:taxpilot@localhost:5432/taxpilot
+          TAXPILOT_DESTRUCTIVE_DATABASE_URL: postgresql+psycopg://taxpilot:taxpilot@localhost:5432/tpx_ci_test
+          TAXPILOT_ALLOW_DESTRUCTIVE_TESTS: "1"
           REDIS_URL: redis://localhost:6379/0
           REQUIRE_SERVICES: "1"
           PYTHONPATH: apps/api

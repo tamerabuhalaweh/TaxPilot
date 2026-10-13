@@ -1,0 +1,13 @@
+# Canonical line endings: migration bytes are checksummed (CHECKSUMS), so they
+# must be byte-identical on every platform. core.autocrlf MUST NOT rewrite them.
+db/migrations/versions/*.sql text eol=lf
+db/migrations/versions/CHECKSUMS text eol=lf
+# Test fixtures and scripts stay LF for stable diffs.
+*.py text eol=lf
+*.sh text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+*.ts text eol=lf
+*.tsx text eol=lf

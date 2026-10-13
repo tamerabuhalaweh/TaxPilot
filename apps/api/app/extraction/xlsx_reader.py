@@ -1,10 +1,13 @@
 """Safe read-only XLSX extraction (bounded ZIP pre-scan, no silent conversion).
 
 Defense order: byte caps -> OOXML signature -> ZIP member scan (declared
-totals) -> streaming actual-size verification -> read-only parse with
-formula/external-link rejection -> explicit sheet/header selection ->
-typed-cell policy (fail-closed by default, exact opt-in conversion).
-Error messages carry coordinates and counts only, never cell values.
+totals) -> streaming actual-size verification (incl. XML entity-marker
+refusal) -> sheet-part resolution -> geometry scan that verifies worksheet
+dimension metadata against actual row/cell content -> bounded read-only
+iteration (explicit min/max from verified geometry, never the declared
+dimension) -> formula/external-link rejection -> explicit sheet/header
+selection -> typed-cell policy (fail-closed by default, exact opt-in
+conversion). Error messages carry coordinates and counts only, never values.
 """
 
 from __future__ import annotations
@@ -12,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import io
 import re
+import xml.etree.ElementTree as ET
 import zipfile
 from datetime import date, datetime, time
 from typing import Any
@@ -33,6 +37,11 @@ _ZIP_MAGIC = b"PK\x03\x04"
 _DRIVE_RE = re.compile(r"^[A-Za-z]:")
 _MAX_LISTED_CELLS = 10
 _CHUNK = 1024 * 1024
+_ENTITY_MARKERS = (b"<!DOCTYPE", b"<!ENTITY")
+_XML_SUFFIXES = (".xml", ".rels")
+_WORKBOOK_XML_CAP = 1024 * 1024
+_CELL_REF_RE = re.compile(r"^\$?([A-Z]{1,3})\$?(\d{1,7})$")
+_DIMENSION_RE = re.compile(r"^\$?([A-Z]{1,3})\$?(\d{1,7})(?::\$?([A-Z]{1,3})\$?(\d{1,7}))?$")
 
 
 def _zip_scan(data: bytes, lim: ExtractionLimits) -> zipfile.ZipFile:
@@ -101,12 +110,16 @@ def _verify_actual_sizes(
 
     Declared sizes are attacker-controlled; openpyxl would otherwise
     decompress unboundedly during parsing. Chunked reads keep memory flat.
+    XML parts are additionally refused when they declare DOCTYPE/ENTITY
+    subsets (entity-expansion vectors have no legitimate OOXML use).
     """
     total = 0
     try:
         for member in members:
             if member.is_dir():
                 continue
+            watch_entities = member.filename.lower().endswith(_XML_SUFFIXES)
+            carry = b""
             with archive.open(member) as stream:
                 while True:
                     chunk = stream.read(_CHUNK)
@@ -119,6 +132,15 @@ def _verify_actual_sizes(
                             code="ZIP_BOMB",
                             detail={"verified_bytes": total},
                         )
+                    if watch_entities:
+                        window = carry + chunk
+                        for marker in _ENTITY_MARKERS:
+                            if marker in window:
+                                raise ExtractionError(
+                                    "XML entity declarations are forbidden in workbook parts",
+                                    code="FORBIDDEN_XML_ENTITIES",
+                                )
+                        carry = window[-15:]
     except RuntimeError as exc:  # e.g. password prompt mid-read
         raise ExtractionError(f"unreadable archive member: {exc}", code="MALFORMED_ZIP") from exc
     except zipfile.BadZipFile as exc:  # truncated/corrupt member (e.g. lied sizes)
@@ -179,6 +201,174 @@ def _select_sheet(names: list[str], settings: XlsxSettings) -> str:
     return names[index - 1]
 
 
+def _local(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1] if "}" in tag else tag
+
+
+def _letters_to_index(letters: str) -> int:
+    index = 0
+    for char in letters:
+        index = index * 26 + (ord(char) - ord("A") + 1)
+    return index
+
+
+def _parse_dimension(ref: str) -> tuple[int, int] | None:
+    """Parse a dimension ref into (rows, cols); None when unparseable."""
+    match = _DIMENSION_RE.match(ref.strip().upper())
+    if not match:
+        return None
+    col_a, row_a, col_b, row_b = match.groups()
+    if col_b is None or row_b is None:
+        return int(row_a), _letters_to_index(col_a)
+    return max(int(row_a), int(row_b)), max(_letters_to_index(col_a), _letters_to_index(col_b))
+
+
+def _read_xml_part(archive: zipfile.ZipFile, name: str) -> bytes:
+    try:
+        blob = archive.read(name)
+    except KeyError as exc:
+        raise ExtractionError(f"workbook is missing required part {name}", code="MALFORMED_WORKBOOK") from exc
+    if len(blob) > _WORKBOOK_XML_CAP:
+        raise ExtractionError(
+            f"workbook part {name} exceeds structural size expectations",
+            code="MALFORMED_WORKBOOK",
+        )
+    return blob
+
+
+def _sheet_part(archive: zipfile.ZipFile, sheet_name: str) -> str:
+    """Resolve a worksheet name to its XML part via workbook.xml + rels.
+
+    Independent of openpyxl: the geometry scan must not depend on the same
+    library whose dimension handling is under suspicion.
+    """
+    try:
+        workbook_root = ET.fromstring(_read_xml_part(archive, "xl/workbook.xml"))
+        rels_root = ET.fromstring(_read_xml_part(archive, "xl/_rels/workbook.xml.rels"))
+    except ET.ParseError as exc:
+        raise ExtractionError("workbook structure XML is unparseable", code="MALFORMED_WORKBOOK") from exc
+    matches: list[str] = []
+    for sheet in workbook_root.iter():
+        if _local(sheet.tag) != "sheet":
+            continue
+        name = sheet.attrib.get("name")
+        rid = next((value for key, value in sheet.attrib.items() if _local(key) == "id"), None)
+        if name == sheet_name and rid is not None:
+            matches.append(rid)
+    if len(matches) != 1:
+        raise ExtractionError(
+            "worksheet reference is missing or ambiguous in workbook.xml",
+            code="MALFORMED_WORKBOOK",
+        )
+    targets = [
+        rel.attrib.get("Target", "")
+        for rel in rels_root.iter()
+        if _local(rel.tag) == "Relationship" and rel.attrib.get("Id") == matches[0]
+    ]
+    if len(targets) != 1 or not targets[0]:
+        raise ExtractionError(
+            "worksheet part reference is missing in workbook rels", code="MALFORMED_WORKBOOK"
+        )
+    target = targets[0]
+    if target.lower().startswith(("http:", "https:", "ftp:", "mailto:")):
+        raise ExtractionError("worksheet points at an external target", code="EXTERNAL_REFS")
+    target = target.lstrip("/")
+    if not target.lower().startswith("xl/"):
+        target = "xl/" + target
+    try:
+        archive.getinfo(target)
+    except KeyError as exc:
+        raise ExtractionError(
+            "worksheet part referenced by workbook.xml is absent", code="MALFORMED_WORKBOOK"
+        ) from exc
+    return target
+
+
+def _scan_geometry(
+    archive: zipfile.ZipFile, part: str, lim: ExtractionLimits
+) -> tuple[tuple[int, int] | None, int, int]:
+    """Stream the sheet XML and measure actual content independent of dimension.
+
+    Returns (declared (rows, cols) or None, actual_max_row, actual_max_col).
+    Caps enforced mid-scan so hostile content errors before openpyxl expands it.
+    """
+    declared: tuple[int, int] | None = None
+    actual_rows = 0
+    actual_max_row = 0
+    actual_max_col = 0
+    row_cells = 0
+    row_ref_max = 0
+    try:
+        with archive.open(part) as stream:
+            parser = ET.iterparse(stream, events=("start", "end"))
+            try:
+                _, root = next(parser)
+            except StopIteration as exc:
+                raise ExtractionError(
+                    "worksheet XML holds no parseable content", code="MALFORMED_WORKBOOK"
+                ) from exc
+            for event, elem in parser:
+                tag = _local(elem.tag)
+                if event == "start":
+                    if tag == "dimension" and declared is None:
+                        declared = _parse_dimension(elem.attrib.get("ref", ""))
+                    elif tag == "c":
+                        row_cells += 1
+                        if row_cells > lim.max_columns:
+                            raise ExtractionError(
+                                f"worksheet holds more than {lim.max_columns} columns",
+                                code="TOO_MANY_COLUMNS",
+                            )
+                        ref = elem.attrib.get("r", "")
+                        match = _CELL_REF_RE.match(ref.strip().upper())
+                        if match:
+                            row_ref_max = max(row_ref_max, _letters_to_index(match.group(1)))
+                            if row_ref_max > lim.max_columns:
+                                raise ExtractionError(
+                                    f"worksheet holds more than {lim.max_columns} columns",
+                                    code="TOO_MANY_COLUMNS",
+                                )
+                elif tag == "row":
+                    number = elem.attrib.get("r")
+                    actual_rows += 1
+                    if actual_rows > lim.max_rows:
+                        raise ExtractionError(
+                            f"worksheet holds more than {lim.max_rows} rows",
+                            code="TOO_MANY_ROWS",
+                        )
+                    if number is not None and number.isdigit():
+                        actual_max_row = max(actual_max_row, int(number))
+                    actual_max_col = max(actual_max_col, row_ref_max, row_cells)
+                    row_cells = 0
+                    row_ref_max = 0
+                    elem.clear()
+            root.clear()
+    except ET.ParseError as exc:
+        raise ExtractionError("worksheet XML is unparseable", code="MALFORMED_WORKBOOK") from exc
+    return declared, actual_max_row, actual_max_col
+
+
+def _check_geometry(
+    declared: tuple[int, int] | None, actual_max_row: int, actual_max_col: int, lim: ExtractionLimits
+) -> None:
+    if declared is None:
+        return  # no hint to trust or distrust; actual bounds rule below
+    declared_rows, declared_cols = declared
+    if declared_rows > lim.max_rows or declared_cols > lim.max_columns:
+        raise ExtractionError(
+            "worksheet dimension declares more rows/columns than extraction allows; "
+            "refusing before row materialization",
+            code="DIMENSION_EXCEEDS_LIMITS",
+            detail={"declared_rows": declared_rows, "declared_cols": declared_cols},
+        )
+    if actual_max_row > declared_rows or actual_max_col > declared_cols:
+        raise ExtractionError(
+            "worksheet dimension understates actual row/cell content; refusing "
+            "rather than silently omitting rows",
+            code="DIMENSION_UNDERSTATED",
+        )
+
+
 def _convert_cell(value: object, data_type: object) -> tuple[str | None, str | None]:
     """Return (text, refusal-kind). Refusals: 'formula', 'typed', 'error'."""
     if value is None:
@@ -237,8 +427,13 @@ def extract_xlsx(
         workbook = _load_workbook(data)
         names = _resolve_sheet_names(workbook)
         selected = _select_sheet(names, settings)
+        part = _sheet_part(archive, selected)
+        declared, actual_max_row, actual_max_col = _scan_geometry(archive, part, lim)
+        _check_geometry(declared, actual_max_row, actual_max_col, lim)
         worksheet = workbook[selected]
-        headers, numbered, skipped, scanned = _read_sheet(worksheet, selected, header_row, settings, lim)
+        headers, numbered, skipped, scanned = _read_sheet(
+            worksheet, selected, header_row, settings, lim, actual_max_row, actual_max_col
+        )
 
     digest = hashlib.sha256(data).hexdigest()
     sheet = ExtractedSheet(headers=tuple(headers), rows=tuple(numbered))
@@ -264,17 +459,23 @@ def _read_sheet(
     header_row: int,
     settings: XlsxSettings,
     lim: ExtractionLimits,
+    max_row: int,
+    max_col: int,
 ) -> tuple[list[str], list[ExtractedRow], int, int]:
     skipped = 0
     scanned = 0
     headers: list[str] | None = None
     width = 0
     rows: list[ExtractedRow] = []
+    chained = 0  # fallback physical number when a sparse row carries none
 
-    for record in worksheet.iter_rows():
+    for record in worksheet.iter_rows(min_row=1, max_row=max(max_row, 1), max_col=max(max_col, 1)):
         if not record:
             continue
-        row_number = record[0].row
+        # Sparse rows surface leading EmptyCells without `.row`: derive the
+        # number from any present cell, else chain from the previous row.
+        row_number = next((cell.row for cell in record if hasattr(cell, "row")), chained + 1)
+        chained = row_number
         if row_number < header_row:
             continue
         texts: list[str] = []

@@ -210,3 +210,42 @@ def test_config_and_type_errors() -> None:
         extract_bytes("not-bytes", declared_format="csv", doc_id="D", csv=CsvSettings(delimiter=","))  # type: ignore[arg-type]
     with pytest.raises(TypeError):
         extract_stream("not-a-stream", declared_format="csv", doc_id="D", csv=CsvSettings(delimiter=","))  # type: ignore[arg-type]
+
+
+# R2: limits enforced during streaming iteration, never after full materialization.
+def test_blank_line_flood_rejected_with_small_source() -> None:
+    data = b"A,B\n" + b"\n" * 220000  # ~220KB source, far below the 25 MiB file cap
+    with pytest.raises(ExtractionError) as exc:
+        extract(data)
+    assert exc.value.code == "TOO_MANY_ROWS"
+
+
+def test_blank_line_flood_rejected_under_tight_cap() -> None:
+    data = b"A,B\n" + b"\n" * 5000
+    with pytest.raises(ExtractionError) as exc:
+        extract(data, limits=ExtractionLimits(max_rows=100))
+    assert exc.value.code == "TOO_MANY_ROWS"
+
+
+def test_many_normal_rows_over_cap_rejected() -> None:
+    data = b"A,B\n" + b"1,2\n" * 3000
+    with pytest.raises(ExtractionError) as exc:
+        extract(data, limits=ExtractionLimits(max_rows=1000))
+    assert exc.value.code == "TOO_MANY_ROWS"
+
+
+def test_quoted_multiline_preamble_physical_header_selection() -> None:
+    data = b'"note spanning\nthree\nlines"\nA,B\n1,2\n'
+    result = extract_bytes(
+        data, declared_format="csv", doc_id="D", csv=CsvSettings(delimiter=",", header_row=4)
+    )
+    assert result.sheet.headers == ("A", "B")
+    assert result.sheet.rows[0].row_number == 5
+    assert result.sheet.rows[0].cells == ("1", "2")
+
+
+def test_header_row_inside_multiline_record_refused() -> None:
+    data = b'"note spanning\nthree\nlines"\nA,B\n1,2\n'
+    with pytest.raises(ExtractionError) as exc:
+        extract_bytes(data, declared_format="csv", doc_id="D", csv=CsvSettings(delimiter=",", header_row=2))
+    assert exc.value.code == "HEADER_ROW_SPLIT"

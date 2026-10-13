@@ -1,4 +1,10 @@
-"""Strict bounded CSV extraction (UTF-8 only, explicit delimiter, no coercion)."""
+"""Strict bounded CSV extraction (UTF-8 only, explicit delimiter, no coercion).
+
+``header_row`` is a physical line number: the header is the record starting
+exactly on that line. A header line splitting a quoted multiline record is
+refused rather than misaligned. Limits are enforced during streaming
+iteration so oversized inputs fail before unbounded materialization.
+"""
 
 from __future__ import annotations
 
@@ -65,33 +71,74 @@ def extract_csv(
         ) from exc
 
     reader = csv.reader(io.StringIO(text, newline=""), delimiter=settings.delimiter, strict=True)
-    numbered: list[tuple[int, list[str]]] = []  # (physical start line, record)
+    header: list[str] | None = None
+    width = 0
+    rows: list[ExtractedRow] = []
+    skipped = 0
+    scanned = 0
     previous_end = 0
     try:
         for record in reader:
             end = reader.line_num
-            numbered.append((previous_end + 1, record))
+            start = previous_end + 1
             previous_end = end
+            if end < header_row:
+                continue  # preamble record ends before the header line
+            if start > header_row:
+                if header is None:  # defensive: every line belongs to some record
+                    raise ExtractionError(
+                        f"header_row {header_row} holds no record",
+                        code="HEADER_ROW_MISSING",
+                    )
+                scanned += 1
+                if scanned > lim.max_rows:
+                    raise ExtractionError(
+                        f"more than {lim.max_rows} data rows",
+                        code="TOO_MANY_ROWS",
+                        detail={"scanned": scanned},
+                    )
+                normalized = _data_row(record, start, width, lim)
+                if normalized is None:
+                    skipped += 1
+                else:
+                    rows.append(normalized)
+                continue
+            if start < header_row:
+                raise ExtractionError(
+                    f"header_row {header_row} splits a quoted multiline record "
+                    f"starting at line {start}; refusing to misalign columns",
+                    code="HEADER_ROW_SPLIT",
+                    detail={"row_number": start},
+                )
+            header = record
+            width = _check_header(header, lim)
     except csv.Error as exc:
         raise ExtractionError(f"malformed CSV quoting/structure: {exc}", code="MALFORMED_CSV") from exc
 
-    return _build_sheet(numbered, data, doc_id, "CSV", header_row, lim)
-
-
-def _build_sheet(
-    numbered: list[tuple[int, list[str]]],
-    data: bytes,
-    doc_id: str,
-    worksheet: str,
-    header_row: int,
-    lim: ExtractionLimits,
-) -> ExtractionResult:
-    if len(numbered) < header_row:
+    if header is None:
         raise ExtractionError(
-            f"header_row {header_row} beyond {len(numbered)} physical rows",
+            f"header_row {header_row} beyond the file contents",
             code="HEADER_ROW_MISSING",
         )
-    _, header = numbered[header_row - 1]
+    digest = hashlib.sha256(data).hexdigest()
+    sheet = ExtractedSheet(headers=tuple(header), rows=tuple(rows))
+    return ExtractionResult(
+        doc=SourceDocument(doc_id=doc_id, content_hash=digest, worksheet="CSV"),
+        sheet=sheet,
+        stats=ExtractionStats(
+            declared_format="csv",
+            file_bytes=len(data),
+            worksheet="CSV",
+            header_row=header_row,
+            header_count=width,
+            data_rows=len(rows),
+            skipped_blank_rows=skipped,
+            physical_rows_scanned=scanned,
+        ),
+    )
+
+
+def _check_header(header: list[str], lim: ExtractionLimits) -> int:
     if not header or all(cell.strip() == "" for cell in header):
         raise ExtractionError("header row carries no column names", code="EMPTY_HEADERS")
     if len(header) > lim.max_columns:
@@ -113,54 +160,30 @@ def _build_sheet(
                 code="CELL_TOO_LARGE",
                 detail={"column_index": index},
             )
+    return len(header)
 
-    width = len(header)
-    rows: list[ExtractedRow] = []
-    skipped = 0
-    scanned = 0
-    for start_line, record in numbered[header_row:]:
-        scanned += 1
-        if scanned > lim.max_rows:
-            raise ExtractionError(
-                f"more than {lim.max_rows} data rows", code="TOO_MANY_ROWS", detail={"scanned": scanned}
-            )
-        trimmed = list(record)
-        while trimmed and trimmed[-1].strip() == "":
-            trimmed.pop()
-        if not trimmed:
-            skipped += 1
-            continue
-        if len(trimmed) > width:
-            raise ExtractionError(
-                f"row {start_line} has {len(trimmed)} cells for {width} headers; "
-                "kept as an error, never realigned by guessing",
-                code="RAGGED_ROW",
-                detail={"row_number": start_line},
-            )
-        while len(trimmed) < width:
-            trimmed.append("")
-        for index, cell in enumerate(trimmed):
-            if len(cell) > lim.max_cell_chars:
-                raise ExtractionError(
-                    f"row {start_line} column {index} exceeds {lim.max_cell_chars} chars",
-                    code="CELL_TOO_LARGE",
-                    detail={"row_number": start_line, "column_index": index},
-                )
-        rows.append(ExtractedRow(row_number=start_line, cells=tuple(trimmed)))
 
-    digest = hashlib.sha256(data).hexdigest()
-    sheet = ExtractedSheet(headers=tuple(header), rows=tuple(rows))
-    return ExtractionResult(
-        doc=SourceDocument(doc_id=doc_id, content_hash=digest, worksheet=worksheet),
-        sheet=sheet,
-        stats=ExtractionStats(
-            declared_format="csv",
-            file_bytes=len(data),
-            worksheet=worksheet,
-            header_row=header_row,
-            header_count=width,
-            data_rows=len(rows),
-            skipped_blank_rows=skipped,
-            physical_rows_scanned=scanned,
-        ),
-    )
+def _data_row(record: list[str], start_line: int, width: int, lim: ExtractionLimits) -> ExtractedRow | None:
+    """Normalize one data record; None when physically blank (skip, keep gap)."""
+    trimmed = list(record)
+    while trimmed and trimmed[-1].strip() == "":
+        trimmed.pop()
+    if not trimmed:
+        return None
+    if len(trimmed) > width:
+        raise ExtractionError(
+            f"row {start_line} has {len(trimmed)} cells for {width} headers; "
+            "kept as an error, never realigned by guessing",
+            code="RAGGED_ROW",
+            detail={"row_number": start_line},
+        )
+    while len(trimmed) < width:
+        trimmed.append("")
+    for index, cell in enumerate(trimmed):
+        if len(cell) > lim.max_cell_chars:
+            raise ExtractionError(
+                f"row {start_line} column {index} exceeds {lim.max_cell_chars} chars",
+                code="CELL_TOO_LARGE",
+                detail={"row_number": start_line, "column_index": index},
+            )
+    return ExtractedRow(row_number=start_line, cells=tuple(trimmed))

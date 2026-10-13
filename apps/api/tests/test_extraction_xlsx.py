@@ -1,6 +1,7 @@
 """EP-04A XLSX extraction unit tests (synthetic workbooks built in-test)."""
 
 import io
+import re
 import struct
 import zipfile
 from datetime import datetime
@@ -341,3 +342,138 @@ def test_stream_and_file_caps() -> None:
         io.BytesIO(data), declared_format="xlsx", doc_id="S", xlsx=XlsxSettings(sheet_name="Sales")
     )
     assert via_stream.sheet == extract(data).sheet
+
+
+# R1: worksheet dimension metadata is verified against actual content.
+def _patch_sheet_xml(data: bytes, old: str, new: str) -> bytes:
+    with zipfile.ZipFile(io.BytesIO(data)) as zin:
+        names = zin.namelist()
+        target = next(n for n in names if n.endswith("worksheets/sheet1.xml"))
+        xml = zin.read(target).decode("utf-8")
+        patched, count = re.subn(old, new, xml, count=1)
+        assert count == 1, "patch anchor not found exactly once"
+        out = io.BytesIO()
+        with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zout:
+            for item in zin.infolist():
+                zout.writestr(item, patched if item.filename == target else zin.read(item.filename))
+    return out.getvalue()
+
+
+def _patch_dimension(data: bytes, newref: str) -> bytes:
+    return _patch_sheet_xml(data, r'<dimension ref="[^"]*"/>', f'<dimension ref="{newref}"/>')
+
+
+def test_forged_narrow_dimension_refused_not_silently_truncated() -> None:
+    data = make_xlsx({"Sales": [["A", "B"], ["1", "2"], ["3", "4"]]})
+    forged = _patch_dimension(data, "A1:B2")  # hides physical row 3 from dimension readers
+    with pytest.raises(ExtractionError) as exc:
+        extract(forged)
+    assert exc.value.code == "DIMENSION_UNDERSTATED"
+
+
+def test_forged_wide_dimension_refused_before_expansion() -> None:
+    data = make_xlsx({"Sales": [["A", "B"], ["1", "2"]]})
+    forged = _patch_dimension(data, "A1:XFD1000000")  # 16k cols x 1M rows phantom
+    with pytest.raises(ExtractionError) as exc:
+        extract(forged)
+    assert exc.value.code == "DIMENSION_EXCEEDS_LIMITS"
+
+
+def test_overstated_dimension_within_caps_yields_no_phantoms() -> None:
+    data = make_xlsx({"Sales": [["A", "B"], ["1", "2"]]})
+    forged = _patch_dimension(data, "A1:D10")
+    result = extract(forged)
+    assert [r.row_number for r in result.sheet.rows] == [2]
+    assert result.stats.data_rows == 1
+
+
+def test_missing_dimension_falls_back_to_actual_bounds() -> None:
+    data = make_xlsx({"Sales": [["A", "B"], ["1", "2"], ["3", "4"]]})
+    with zipfile.ZipFile(io.BytesIO(data)) as zin:
+        names = zin.namelist()
+        target = next(n for n in names if n.endswith("worksheets/sheet1.xml"))
+        xml = zin.read(target).decode("utf-8")
+        stripped, count = re.subn(r'<dimension ref="[^"]*"/>', "", xml, count=1)
+        assert count == 1
+        out = io.BytesIO()
+        with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zout:
+            for item in zin.infolist():
+                zout.writestr(item, stripped if item.filename == target else zin.read(item.filename))
+    result = extract(out.getvalue())
+    assert [r.row_number for r in result.sheet.rows] == [2, 3]
+
+
+def test_sparse_sheet_with_row_gaps() -> None:
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Sales"
+    sheet.append(["A", "B"])
+    sheet.append(["1", "2"])
+    sheet["A5"] = "x"
+    sheet["B5"] = "y"
+    buffer = io.BytesIO()
+    workbook.save(buffer)
+    result = extract(buffer.getvalue())
+    assert [r.row_number for r in result.sheet.rows] == [2, 5]
+    assert result.sheet.rows[1].cells == ("x", "y")
+
+
+def test_entity_declarations_refused() -> None:
+    data = make_xlsx({"Sales": SALES_ROWS})
+    with zipfile.ZipFile(io.BytesIO(data)) as zin:
+        names = zin.namelist()
+        target = next(n for n in names if n.endswith("worksheets/sheet1.xml"))
+        xml = zin.read(target).decode("utf-8")
+        assert "<worksheet" in xml
+        poisoned = xml.replace("<worksheet", '<!DOCTYPE x [<!ENTITY x "y">]><worksheet', 1)
+        out = io.BytesIO()
+        with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zout:
+            for item in zin.infolist():
+                zout.writestr(item, poisoned if item.filename == target else zin.read(item.filename))
+    with pytest.raises(ExtractionError) as exc:
+        extract(out.getvalue())
+    assert exc.value.code == "FORBIDDEN_XML_ENTITIES"
+
+
+# R3: sparse rows surface EmptyCells without `.row`; numbering must not crash.
+def test_sparse_data_row_blank_first_cell() -> None:
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Sales"
+    sheet["A1"] = "A"
+    sheet["B1"] = "B"
+    sheet["B2"] = "val"  # A2 absent from XML: EmptyCell on read
+    buffer = io.BytesIO()
+    workbook.save(buffer)
+    result = extract(buffer.getvalue())
+    assert result.sheet.headers == ("A", "B")
+    assert len(result.sheet.rows) == 1
+    assert result.sheet.rows[0].row_number == 2
+    assert result.sheet.rows[0].cells == ("", "val")
+
+
+def test_sparse_header_blank_first_cell_reports_typed_error() -> None:
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Sales"
+    sheet["B1"] = "B"  # A1 absent: EmptyCell header, not a crash
+    sheet["B2"] = "val"
+    buffer = io.BytesIO()
+    workbook.save(buffer)
+    with pytest.raises(ExtractionError) as exc:
+        extract(buffer.getvalue())
+    assert exc.value.code == "BLANK_HEADER"
+
+
+def test_sparse_multi_column_only_last_filled() -> None:
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Sales"
+    sheet.append(["A", "B", "C", "D"])
+    sheet["D3"] = "z"  # entire row sparse except the last column
+    buffer = io.BytesIO()
+    workbook.save(buffer)
+    result = extract(buffer.getvalue())
+    assert len(result.sheet.rows) == 1
+    assert result.sheet.rows[0].row_number == 3
+    assert result.sheet.rows[0].cells == ("", "", "", "z")

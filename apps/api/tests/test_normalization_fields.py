@@ -32,13 +32,23 @@ GL_MAP = {
 
 
 def sales_opts(**kwargs: object) -> NormalizationOptions:
-    base: dict[str, object] = {"doc_type": "sales_register", "date_format": "DD/MM/YYYY"}
+    base: dict[str, object] = {
+        "doc_type": "sales_register",
+        "decimal_separator": ".",
+        "grouping_separator": ",",
+        "date_format": "DD/MM/YYYY",
+    }
     base.update(kwargs)
     return NormalizationOptions(**base)  # type: ignore[arg-type]
 
 
 def gl_opts(**kwargs: object) -> NormalizationOptions:
-    base: dict[str, object] = {"doc_type": "general_ledger", "date_format": "DD/MM/YYYY"}
+    base: dict[str, object] = {
+        "doc_type": "general_ledger",
+        "decimal_separator": ".",
+        "grouping_separator": ",",
+        "date_format": "DD/MM/YYYY",
+    }
     base.update(kwargs)
     return NormalizationOptions(**base)  # type: ignore[arg-type]
 
@@ -255,8 +265,29 @@ def test_gl_debit_credit_separate_and_negatives_preserved() -> None:
     assert totals[("credit_amount", "JOD")] == Decimal("95.50")
 
 
-def test_gl_empty_entry_warns_without_failing() -> None:
+def test_gl_amountless_row_fails_both_sides_mapped() -> None:
     result = normalize_dataset(DOC, gl_sheet(("000127", "05/02/2026", "", "", "JOD")), GL_MAPPING, gl_opts())
-    assert result.rows[0].status == "WARNING"
-    assert any("EMPTY_GL_ENTRY" in i.code for i in result.rows[0].row_issues)
-    assert result.readiness == "READY_FOR_CHECKS"
+    assert result.rows[0].status == "FAILED"
+    assert any("MISSING_GL_AMOUNTS" in i.code for i in result.rows[0].row_issues)
+    assert result.readiness == "NOT_READY"
+
+
+def test_gl_amountless_row_fails_single_side_mapped() -> None:
+    debit_only = ConfirmedMapping(
+        field_map={k: v for k, v in GL_MAP.items() if k != "credit_amount"},
+        confirmed=True,
+    )
+    result = normalize_dataset(DOC, gl_sheet(("000128", "05/02/2026", "", "", "JOD")), debit_only, gl_opts())
+    assert result.rows[0].status == "FAILED"
+    assert any("MISSING_GL_AMOUNTS" in i.code for i in result.rows[0].row_issues)
+    assert result.readiness == "NOT_READY"
+
+
+def test_gl_invalid_amount_stays_field_error_without_extra_issue() -> None:
+    result = normalize_dataset(
+        DOC, gl_sheet(("000129", "05/02/2026", "oops", "", "JOD")), GL_MAPPING, gl_opts()
+    )
+    assert result.rows[0].status == "FAILED"
+    codes = [i.code for f in result.rows[0].fields for i in f.issues]
+    assert any("INVALID_AMOUNT" in c for c in codes)
+    assert not any("MISSING_GL_AMOUNTS" in c for c in codes)

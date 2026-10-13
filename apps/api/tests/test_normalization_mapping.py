@@ -31,7 +31,12 @@ def confirmed(field_map: dict[str, str]) -> ConfirmedMapping:
 
 
 def opts() -> NormalizationOptions:
-    return NormalizationOptions(doc_type="sales_register", date_format="DD/MM/YYYY")
+    return NormalizationOptions(
+        doc_type="sales_register",
+        decimal_separator=".",
+        grouping_separator=",",
+        date_format="DD/MM/YYYY",
+    )
 
 
 # Suggestions are advisory only (FR-EXT-002).
@@ -214,3 +219,70 @@ def test_invalid_mapping_cannot_be_versioned() -> None:
             headers=("Invoice Number",),
             mapping=confirmed({"invoice_number": "Renamed Away"}),
         )
+
+
+# R3: delimiter-joined fingerprints collided on pipes inside headers.
+def test_pipe_headers_fingerprint_without_collision() -> None:
+    left = fingerprint_headers(("a|b", "c"))
+    right = fingerprint_headers(("a", "b|c"))
+    assert left != right
+    # The old delimiter scheme hashed the identical preimage and hid the drift:
+    assert "|".join(("a|b", "c")) == "|".join(("a", "b|c"))
+
+
+def test_pipe_collision_detected_as_drift() -> None:
+    base = ("Net Amount", "Invoice Number", "Invoice Date", "Currency")
+    saved = build_profile(
+        profile_id="P1",
+        tenant_id="T1",
+        client_id="C1",
+        doc_type="sales_register",
+        headers=("A|B", "C", *base),
+        mapping=confirmed(
+            {
+                "invoice_number": "Invoice Number",
+                "transaction_date": "Invoice Date",
+                "net_amount": "Net Amount",
+                "currency": "Currency",
+            }
+        ),
+    )
+    drift = detect_drift(saved, ("A", "B|C", *base))
+    assert drift.status == "DRIFT" and drift.requires_reconfirmation
+
+
+# Approved field maps are snapshotted and frozen at the boundary.
+def test_confirmed_mapping_snapshot_and_frozen() -> None:
+    source = dict(SALES_MAP)
+    mapping = confirmed(source)
+    source["injected"] = "Evil"
+    assert "injected" not in mapping.field_map
+    with pytest.raises(TypeError):
+        mapping.field_map["injected"] = "Evil"  # type: ignore[index]
+
+
+def test_profile_field_map_snapshot_and_frozen() -> None:
+    saved = build_profile(
+        profile_id="P1",
+        tenant_id="T1",
+        client_id="C1",
+        doc_type="sales_register",
+        headers=SALES_HEADERS,
+        mapping=confirmed(dict(SALES_MAP)),
+    )
+    with pytest.raises(TypeError):
+        saved.field_map["injected"] = "Evil"  # type: ignore[index]
+    assert detect_drift(saved, SALES_HEADERS).status == "CURRENT"
+
+
+def test_non_mapping_field_map_rejected() -> None:
+    with pytest.raises(TypeError):
+        ConfirmedMapping(field_map=["not", "a", "mapping"], confirmed=True)  # type: ignore[arg-type]
+
+
+# Numeric convention must be explicitly opted into per run.
+def test_separators_have_no_silent_default() -> None:
+    with pytest.raises(TypeError):
+        NormalizationOptions(doc_type="sales_register")  # type: ignore[call-arg]
+    explicit = NormalizationOptions(doc_type="sales_register", decimal_separator=".", grouping_separator=None)
+    assert (explicit.decimal_separator, explicit.grouping_separator) == (".", None)

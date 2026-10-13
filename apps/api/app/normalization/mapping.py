@@ -8,6 +8,7 @@ actionable diagnostics. Suggestions (see ``suggest``) never satisfy it.
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import dataclass, field
 
 from app.normalization.contracts import (
@@ -43,11 +44,16 @@ class MappingReport:
 
 
 def fingerprint_headers(headers: tuple[str, ...]) -> str:
-    """Stable sha256 over normalized headers (drift detection anchor)."""
+    """Stable sha256 over normalized headers (drift detection anchor).
+
+    Serialized as a canonical JSON array, never delimiter-joined: ``|`` may
+    appear inside a header, so ``("a|b", "c")`` and ``("a", "b|c")`` must (and
+    do) fingerprint differently. Delimiter concatenation hid such drift.
+    """
     for header in headers:
         if not isinstance(header, str):
             raise TypeError(f"headers must be str, got {type(header).__name__}")
-    canonical = "|".join(normalize_header(h) for h in headers)
+    canonical = json.dumps([normalize_header(h) for h in headers], ensure_ascii=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 

@@ -14,9 +14,11 @@ No I/O, DB, network, or float anywhere in this package.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
+from types import MappingProxyType
 
 SALES_REGISTER = "sales_register"
 GENERAL_LEDGER = "general_ledger"
@@ -114,14 +116,21 @@ class ConfirmedMapping:
 
     ``confirmed`` MUST be True for any dataset to become READY_FOR_CHECKS;
     suggestions alone never satisfy the gate. ``mapping_version`` is an opaque
-    caller-owned version string bound into the dataset fingerprint.
+    caller-owned version string bound into the dataset fingerprint. The map is
+    snapshotted and frozen at construction: later caller-side mutations of the
+    passed dict cannot alter an approved mapping.
     """
 
-    field_map: dict[str, str]
+    field_map: Mapping[str, str]
     confirmed: bool
     mapping_version: str = "1"
     approved_by: str = ""
     approved_at: str = ""
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.field_map, Mapping):
+            raise TypeError(f"field_map must be a mapping, got {type(self.field_map).__name__}")
+        object.__setattr__(self, "field_map", MappingProxyType(dict(self.field_map)))
 
 
 @dataclass(frozen=True)
@@ -134,11 +143,13 @@ class NormalizationOptions:
     mapped (``None`` means no approval: missing currency blocks). Period
     bounds are inclusive; out-of-range dates warn, never drop. ``doc_type``
     selects the schema contract explicitly (never inferred from headers).
+    The numeric convention (``decimal_separator``/``grouping_separator``) has
+    no default: the caller must opt into it on every run.
     """
 
-    doc_type: str = "sales_register"
-    decimal_separator: str = "."
-    grouping_separator: str | None = ","
+    doc_type: str
+    decimal_separator: str
+    grouping_separator: str | None
     date_format: str | None = None
     default_currency: str | None = None
     period_start: date | None = None
@@ -151,6 +162,7 @@ class MappingProfile:
 
     ``tenant_id``/``client_id`` bind the profile to its owner scope; this
     module performs no authorization, it only carries and fingerprints them.
+    The map is snapshotted and frozen at construction like ``ConfirmedMapping``.
     """
 
     profile_id: str
@@ -158,10 +170,15 @@ class MappingProfile:
     client_id: str
     doc_type: str
     header_fingerprint: str
-    field_map: dict[str, str]
+    field_map: Mapping[str, str]
     mapping_version: str
     approved_by: str = ""
     approved_at: str = ""
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.field_map, Mapping):
+            raise TypeError(f"field_map must be a mapping, got {type(self.field_map).__name__}")
+        object.__setattr__(self, "field_map", MappingProxyType(dict(self.field_map)))
 
 
 @dataclass(frozen=True)
@@ -210,7 +227,12 @@ class NormalizedRow:
 
 @dataclass(frozen=True)
 class FieldTotal:
-    """Segregated per-(field, currency) total. Currencies never combine."""
+    """Segregated per-(field, currency) total over eligible rows only.
+
+    Currencies never combine. Totals cover VALID + WARNING rows; FAILED rows
+    are excluded (see ``DatasetResult.eligible_rows``/``excluded_rows``), so a
+    total is never mistaken for a full-period figure when rows were excluded.
+    """
 
     field: str
     currency: str
@@ -249,13 +271,21 @@ class RowCounts:
 
 @dataclass(frozen=True)
 class DatasetResult:
-    """Deterministic normalization outcome with preview and readiness."""
+    """Deterministic normalization outcome with preview and readiness.
+
+    ``eligible_rows`` (VALID + WARNING) contribute to ``totals``;
+    ``excluded_rows`` (FAILED) never do. ``timings_ms`` is observational
+    metadata (live clock) and is excluded from ``fingerprint``: equal inputs
+    rerun to equal fingerprints and rows even as timings vary.
+    """
 
     doc_type: str
     readiness: str  # READY_FOR_CHECKS | NOT_READY
     rows: tuple[NormalizedRow, ...]
     preview: tuple[NormalizedRow, ...]  # first <=20 rows, same objects
     counts: RowCounts
+    eligible_rows: int
+    excluded_rows: int
     blocking_issues: tuple[FieldIssue, ...]
     warnings: tuple[FieldIssue, ...]
     totals: tuple[FieldTotal, ...]

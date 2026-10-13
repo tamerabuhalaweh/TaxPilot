@@ -22,6 +22,13 @@ JoFotara boundary: ``jofotara_export`` is recognized as a document type but
 refused without an explicitly approved format profile (``UNSUPPORTED_PROFILE``);
 no government layouts, rates, versions, or support claims are invented here.
 
+Totals cover eligible (VALID/WARNING) rows only; FAILED rows are excluded
+and counted in ``excluded_rows``, so totals are never full-period figures
+when rows were excluded. A general-ledger row is VALID only with at least
+one valid monetary value. The numeric convention has no default and must be
+opted into per run; header fingerprints use canonical JSON arrays so
+delimiter collisions cannot hide schema drift.
+
 No database, HTTP, network, file I/O, or external services. No tax rules,
 no REC-001..005, no reports.
 """

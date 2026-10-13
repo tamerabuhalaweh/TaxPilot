@@ -8,6 +8,14 @@ Fail-closed rules: bad mappings produce no rows; invalid/ambiguous values
 produce field errors (never zeros, never inferred formats or currencies);
 out-of-period rows warn without being dropped; ``jofotara_export`` without an
 approved format profile is refused outright (no invented layouts).
+
+Totals policy: per-(field, currency) totals aggregate VALID + WARNING rows
+only; FAILED rows never contribute, and ``eligible_rows``/``excluded_rows``
+state the coverage so totals are never mistaken for full-period figures.
+
+Row policy: a general-ledger row normalizes to VALID only with at least one
+valid monetary value; mapped-but-blank debit/credit with no other amount is
+a blocking MISSING_GL_AMOUNTS error (whether one or both sides are mapped).
 """
 
 from __future__ import annotations
@@ -248,21 +256,19 @@ def _normalize_row(
 
     row_issues: list[FieldIssue] = []
     if doc_type == GENERAL_LEDGER:
-        debit = next((f for f in fields if f.canonical == "debit_amount"), None)
-        credit = next((f for f in fields if f.canonical == "credit_amount"), None)
-        if (
-            debit is not None
-            and credit is not None
-            and debit.normalized is None
-            and credit.normalized is None
-            and not debit.issues
-            and not credit.issues
-        ):
+        amount_fields = [f for f in fields if f.canonical in ("debit_amount", "credit_amount")]
+        has_value = any(isinstance(f.normalized, Decimal) for f in amount_fields)
+        has_amount_error = any(i.severity == SEVERITY_ERROR for f in amount_fields for i in f.issues)
+        # No financial data in any mapped amount column: the row carries
+        # nothing reconcilable, so it fails whether one or both sides are
+        # mapped. (Invalid-but-present amounts already fail via field errors.)
+        if amount_fields and not has_value and not has_amount_error:
             row_issues.append(
                 FieldIssue(
-                    "EMPTY_GL_ENTRY",
-                    "no debit or credit; kept without inference",
-                    SEVERITY_WARNING,
+                    "MISSING_GL_AMOUNTS",
+                    "no debit or credit value; a ledger row without an amount "
+                    "is not reconcilable and cannot be READY",
+                    SEVERITY_ERROR,
                     _location(doc, row_number, -1, ""),
                 )
             )
@@ -379,6 +385,8 @@ def _refused_result(
         rows=(),
         preview=(),
         counts=RowCounts(total=0, valid=0, warning=0, failed=0),
+        eligible_rows=0,
+        excluded_rows=0,
         blocking_issues=annotated,
         warnings=(),
         totals=(),
@@ -552,7 +560,10 @@ def normalize_dataset(
             default_currency,
         )
         rows.append(normalized_row)
-        all_money.extend(row_money)
+        # R1: only eligible rows (VALID/WARNING) feed totals; FAILED rows
+        # never contribute, even when individual money fields parsed cleanly.
+        if normalized_row.status != STATUS_FAILED:
+            all_money.extend(row_money)
     normalization_ms = (time.perf_counter() - norm_start) * 1000.0
 
     valid = sum(1 for r in rows if r.status == STATUS_VALID)
@@ -583,6 +594,8 @@ def normalize_dataset(
         rows=rows_t,
         preview=rows_t[:_PREVIEW_LIMIT],
         counts=RowCounts(total=len(rows_t), valid=valid, warning=warning, failed=failed),
+        eligible_rows=valid + warning,
+        excluded_rows=failed,
         blocking_issues=tuple(blocking),
         warnings=tuple(warnings),
         totals=_segregated_totals(all_money),

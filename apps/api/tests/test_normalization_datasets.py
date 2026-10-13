@@ -37,6 +37,8 @@ DOC = SourceDocument(doc_id="SYN-DS-1", content_hash="synthetic-hash-ds-1", work
 def sales_opts(**kwargs: object) -> NormalizationOptions:
     base: dict[str, object] = {
         "doc_type": "sales_register",
+        "decimal_separator": ".",
+        "grouping_separator": ",",
         "date_format": "DD/MM/YYYY",
         "period_start": date(2026, 1, 1),
         "period_end": date(2026, 12, 31),
@@ -87,7 +89,12 @@ def test_synthetic_gl_example_keeps_sides_separate() -> None:
         gl_doc,
         sheet,
         mapping,
-        NormalizationOptions(doc_type="general_ledger", date_format="DD/MM/YYYY"),
+        NormalizationOptions(
+            doc_type="general_ledger",
+            decimal_separator=".",
+            grouping_separator=",",
+            date_format="DD/MM/YYYY",
+        ),
     )
     assert result.readiness == "READY_FOR_CHECKS"
     by_field = {(t.field, t.currency): t.total for t in result.totals}
@@ -136,6 +143,49 @@ def test_error_isolation_and_totals_exclude_failures() -> None:
     assert result.readiness == "NOT_READY" and result.counts.failed == 1
     by_field = {(t.field, t.currency): t.total for t in result.totals}
     assert by_field[("net_amount", "JOD")] == Decimal("150.00")
+    assert (result.eligible_rows, result.excluded_rows) == (2, 1)
+
+
+def test_failed_row_valid_amounts_excluded_across_fields_and_currencies() -> None:
+    # R1: the failed row below parses clean 999.00/99.00 amounts, but its date
+    # is invalid, so NEITHER amount may enter totals (previously the valid tax
+    # leaked into the total).
+    sheet = ExtractedSheet(
+        headers=SALES_HEADERS,
+        rows=(
+            ExtractedRow(row_number=2, cells=("INV-1", "05/01/2026", "100.00", "16.00", "JOD")),
+            ExtractedRow(row_number=3, cells=("INV-2", "not-a-date", "999.00", "99.00", "JOD")),
+            ExtractedRow(row_number=4, cells=("INV-3", "06/01/2026", "50.00", "8.00", "USD")),
+        ),
+    )
+    result = normalize_dataset(
+        DOC, sheet, ConfirmedMapping(field_map=dict(SALES_MAP), confirmed=True), sales_opts()
+    )
+    assert [r.status for r in result.rows] == ["VALID", "FAILED", "VALID"]
+    assert result.readiness == "NOT_READY"
+    by_field = {(t.field, t.currency): t.total for t in result.totals}
+    assert by_field == {
+        ("net_amount", "JOD"): Decimal("100.00"),
+        ("tax_amount", "JOD"): Decimal("16.00"),
+        ("net_amount", "USD"): Decimal("50.00"),
+        ("tax_amount", "USD"): Decimal("8.00"),
+    }
+    assert (result.eligible_rows, result.excluded_rows) == (2, 1)
+
+
+def test_warning_rows_stay_eligible_for_totals() -> None:
+    sheet = ExtractedSheet(
+        headers=SALES_HEADERS,
+        rows=(ExtractedRow(row_number=2, cells=("INV-1", "15/06/2025", "10.00", "1.60", "JOD")),),
+    )
+    result = normalize_dataset(
+        DOC, sheet, ConfirmedMapping(field_map=dict(SALES_MAP), confirmed=True), sales_opts()
+    )
+    assert result.rows[0].status == "WARNING"  # OUT_OF_PERIOD, kept
+    assert result.readiness == "READY_FOR_CHECKS"
+    by_field = {(t.field, t.currency): t.total for t in result.totals}
+    assert by_field[("net_amount", "JOD")] == Decimal("10.00")
+    assert (result.eligible_rows, result.excluded_rows) == (1, 0)
 
 
 def test_every_value_carries_exact_source_provenance() -> None:
@@ -217,7 +267,11 @@ def test_unprofiled_jofotara_refused_without_invention() -> None:
         jofo_doc,
         sheet,
         ConfirmedMapping(field_map={}, confirmed=True),
-        NormalizationOptions(doc_type="jofotara_export"),
+        NormalizationOptions(
+            doc_type="jofotara_export",
+            decimal_separator=".",
+            grouping_separator=",",
+        ),
     )
     assert result.readiness == "NOT_READY" and result.rows == () and result.preview == ()
     assert any("UNSUPPORTED_PROFILE" in i.code for i in result.blocking_issues)

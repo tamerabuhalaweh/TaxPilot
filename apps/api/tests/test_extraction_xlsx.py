@@ -359,8 +359,14 @@ def _patch_sheet_xml(data: bytes, old: str, new: str) -> bytes:
     return out.getvalue()
 
 
+# openpyxl/et_xmlfile serialize empty elements with or without a space
+# (`<dimension ref="A1:B2"/>` vs `<dimension ref="A1:B2" />`) depending on
+# the installed XML backend, so test patching stays serialization-agnostic.
+_DIMENSION_TAG_RE = r'<dimension\s+ref="[^"]*"\s*/?>'
+
+
 def _patch_dimension(data: bytes, newref: str) -> bytes:
-    return _patch_sheet_xml(data, r'<dimension ref="[^"]*"/>', f'<dimension ref="{newref}"/>')
+    return _patch_sheet_xml(data, _DIMENSION_TAG_RE, f'<dimension ref="{newref}"/>')
 
 
 def test_forged_narrow_dimension_refused_not_silently_truncated() -> None:
@@ -393,7 +399,7 @@ def test_missing_dimension_falls_back_to_actual_bounds() -> None:
         names = zin.namelist()
         target = next(n for n in names if n.endswith("worksheets/sheet1.xml"))
         xml = zin.read(target).decode("utf-8")
-        stripped, count = re.subn(r'<dimension ref="[^"]*"/>', "", xml, count=1)
+        stripped, count = re.subn(_DIMENSION_TAG_RE, "", xml, count=1)
         assert count == 1
         out = io.BytesIO()
         with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zout:

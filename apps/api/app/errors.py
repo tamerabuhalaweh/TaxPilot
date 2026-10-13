@@ -27,6 +27,7 @@ _STATUS_BY_CODE = {
     "APPROVAL_BLOCKED": 409,
     "VALIDATION_ERROR": 422,
     "RATE_LIMITED": 429,
+    "FEATURE_DISABLED": 403,  # approved fail-closed gate (e.g., unencrypted identifier collection)
     "INTERNAL_ERROR": 500,  # default fallback, listed explicitly so the map stays total
     # Jurisdiction placeholders (contracts approved; enforcement lands with JUR-01/02)
     "JURISDICTION_NOT_SUPPORTED": 422,

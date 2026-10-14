@@ -384,6 +384,46 @@ def test_fingerprint_stable_under_ambiguous_permutation() -> None:
     assert first.fingerprint == second.fingerprint
 
 
+def test_fingerprint_stable_under_issuer_case_permutation() -> None:
+    # F3a: rows identical except raw issuer case tie in the normalized key but
+    # serialize differently — the raw issuer tie-breaker keeps order total.
+    sales = (
+        sales_inv("INV-001", "100.000", issuer="Acme", row=2),
+        sales_inv("INV-001", "100.000", issuer="ACME", row=2),
+    )
+    jofo = (jofo_inv("INV-009", "10.000"),)
+    first = reconcile(sales, jofo, req())
+    assert [o.kind for o in first.outcomes] == [DUPLICATE_SALES, UNMATCHED_JOFOTARA]
+    second = reconcile(tuple(reversed(sales)), tuple(reversed(jofo)), req())
+    assert [o.kind for o in second.outcomes] == [DUPLICATE_SALES, UNMATCHED_JOFOTARA]
+    assert first.fingerprint == second.fingerprint
+
+
+def test_fingerprint_stable_under_number_whitespace_permutation() -> None:
+    # F3a: "INV-001" vs "INV-001 " share a key but not a serialization.
+    sales = (
+        sales_inv("INV-001", "100.000", row=4),
+        sales_inv("INV-001 ", "100.000", row=4),
+    )
+    jofo = (jofo_inv("INV-009", "10.000"),)
+    first = reconcile(sales, jofo, req())
+    assert [o.kind for o in first.outcomes] == [DUPLICATE_SALES, UNMATCHED_JOFOTARA]
+    assert first.fingerprint == reconcile(tuple(reversed(sales)), jofo, req()).fingerprint
+
+
+def test_fingerprint_stable_under_reference_permutation() -> None:
+    # F3a: same-key credits differing only in reference must order identically.
+    sales = (sales_inv("INV-001", "100.000"),)
+    credits = (
+        jofo_inv("CN-A", "10.000", credit=True, reference_number="INV-404", row=5),
+        jofo_inv("CN-A", "10.000", credit=True, reference_number="INV-405", row=5),
+    )
+    jofo = (jofo_inv("INV-001", "100.000"),) + credits
+    first = reconcile(sales, jofo, req())
+    assert [o.kind for o in first.outcomes] == [DUPLICATE_JOFOTARA, EXACT_MATCH]
+    assert first.fingerprint == reconcile(sales, tuple(reversed(jofo)), req()).fingerprint
+
+
 def test_determinism_under_reordered_input() -> None:
     sales = tuple(sales_inv(f"INV-{i:03d}", f"{i * 10}.000", row=i) for i in range(1, 9))
     jofo = tuple(jofo_inv(f"INV-{i:03d}", f"{i * 10}.000", row=i) for i in range(2, 10))

@@ -77,18 +77,21 @@ def _period_flag(row_date: date | None, start: date | None, end: date | None) ->
 
 def _sort_key(
     row: CanonicalInvoice,
-) -> tuple[str, str, str, str, str, str, bool, bool, str, str, str, int, str]:
+) -> tuple[str, str, str, str, str, str, str, str, bool, bool, str, str, str, int, str]:
     """Total order over identity, values, flags, and provenance.
 
-    Two rows compare equal here only when indistinguishable in every
-    decision-relevant field — in which case their serialized order cannot
-    affect the fingerprint either.
+    The normalized key comes first (matching semantics unchanged); RAW issuer
+    and RAW number follow as tie-breakers because the fingerprint serializes
+    raw values — equal sort keys therefore imply identical serialized
+    evidence, and no input permutation can move the fingerprint.
     """
     issuer, number = row.key()
     provenance = row.provenance
     return (
         issuer,
         number,
+        row.issuer,
+        row.number,
         row.amount_raw,
         str(row.amount) if row.amount is not None else "",
         row.currency or "",

@@ -439,28 +439,28 @@ class DurableJobs:
         A publisher that dies mid-publish holds an expired lease; the sweeper
         releases it and a new fencing token invalidates the old owner — a late
         ack from the crashed publisher is rejected, never double-published.
+
+        Rows under a LIVE lease are never re-claimed (only expired ones are,
+        with a fresh token): concurrent publishers cannot share one event.
         """
         if lease_ttl_seconds <= 0:
             raise ValueError("lease_ttl_seconds must be positive")
-        token = _mint_token(owner)
         rows = (
             self.conn.execute(
                 text(
-                    "UPDATE job_outbox AS o SET lease_owner = :owner, fencing_token = :token, "
+                    "UPDATE job_outbox AS o SET lease_owner = :owner, "
+                    # Per-row token (not one per batch): each claimed event owns
+                    # an independent fence, mirroring per-attempt job tokens.
+                    "fencing_token = :owner || ':' || gen_random_uuid(), "
                     "lease_expires_at = clock_timestamp() + make_interval(secs => :ttl) "
                     "WHERE o.id IN (SELECT id FROM job_outbox WHERE status = 'PENDING' "
                     "AND next_attempt_at <= clock_timestamp() "
+                    "AND (lease_expires_at IS NULL OR lease_expires_at <= clock_timestamp()) "
                     "AND (CAST(:tenant AS UUID) IS NULL OR tenant_id = CAST(:tenant AS UUID)) "
                     "ORDER BY created_at, id LIMIT :limit FOR UPDATE SKIP LOCKED) "
                     "RETURNING o.*"
                 ),
-                {
-                    "owner": owner,
-                    "token": token,
-                    "ttl": lease_ttl_seconds,
-                    "tenant": tenant_id,
-                    "limit": limit,
-                },
+                {"owner": owner, "ttl": lease_ttl_seconds, "tenant": tenant_id, "limit": limit},
             )
             .mappings()
             .all()

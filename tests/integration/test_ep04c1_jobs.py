@@ -737,23 +737,27 @@ def test_outbox_atomic_publish_claim_ack_lifecycle():
         assert sorted(e["id"] for e in claimed) == sorted(
             [event["id"], first_publish["id"]]
         )
-        assert claimed[0]["fencing_token"]  # ownership fenced per claim
+        tokens = {e["id"]: e["fencing_token"] for e in claimed}
         assert (
-            dao.outbox_ack(
-                event["id"], "publisher-a", claimed[0]["fencing_token"], True
-            )
+            tokens[event["id"]] and tokens[event["id"]] != tokens[first_publish["id"]]
+        )
+        assert (
+            dao.outbox_ack(event["id"], "publisher-a", tokens[event["id"]], True)
             is True
         )
         assert (
-            dao.outbox_ack(
-                event["id"], "publisher-a", claimed[0]["fencing_token"], True
-            )
+            dao.outbox_ack(event["id"], "publisher-a", tokens[event["id"]], True)
             is False
         )  # already published: fenced
+        assert (
+            dao.outbox_ack(
+                first_publish["id"], "publisher-a", tokens[first_publish["id"]], True
+            )
+            is True
+        )
         dao.commit()
-    with _factory() as dao:
-        remaining = dao.outbox_claim(tenant, "publisher-a", 60.0)
-        assert [e["id"] for e in remaining] == [first_publish["id"]]
+    with _factory() as dao:  # all published: nothing claimable
+        assert dao.outbox_claim(tenant, "publisher-a", 60.0) == []
         dao.commit()
 
 

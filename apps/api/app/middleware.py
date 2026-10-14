@@ -35,15 +35,24 @@ class BodyLimitMiddleware(BaseHTTPMiddleware):
 
     A declared Content-Length above the cap is rejected before reading. Bodies
     arriving without (or with a lying) length are capped while streaming: the
-    first byte past the limit aborts with 413. Uploads will get per-route limits
-    later; this default protects JSON/auth surfaces.
+    first byte past the limit aborts with 413.
+
+    EP-04B intake uploads bypass this buffer: the upload route streams under
+    its own per-route cap (upload_max_bytes) instead of the JSON body cap, so
+    large quarantined files never sit buffered here. All other routes keep the
+    default protection.
     """
+
+    # POST bodies under this path suffix stream under route-owned caps.
+    UPLOAD_BYPASS_SUFFIX = "/document-intakes"
 
     def __init__(self, app, max_bytes: int):  # type: ignore[no-untyped-def]
         super().__init__(app)
         self.max_bytes = max_bytes
 
     async def dispatch(self, request: Request, call_next):  # type: ignore[no-untyped-def]
+        if request.method == "POST" and request.url.path.endswith(self.UPLOAD_BYPASS_SUFFIX):
+            return await call_next(request)
         declared = request.headers.get("content-length")
         if declared is not None:
             try:

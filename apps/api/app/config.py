@@ -47,6 +47,15 @@ class Settings(BaseSettings):
     # per-route limits later). Applies even without Content-Length.
     max_body_bytes: int = 1_048_576
 
+    # EP-04B client-intake quarantine (FR-FILE-003..010). Uploads stream under
+    # their own per-route cap; the global JSON body cap above is untouched.
+    upload_max_bytes: int = 25 * 1024 * 1024
+    # Only "local" exists (dev/test quarantine adapter). Staging/production
+    # never accept local disk: storage readiness fails closed at request time
+    # until an approved private object store + scan gate lands (EP-04C).
+    storage_backend: str = "local"
+    quarantine_root: str | None = None
+
     @model_validator(mode="after")
     def _guard(self) -> "Settings":
         if self.auth_expose_tokens is None:
@@ -64,6 +73,10 @@ class Settings(BaseSettings):
             raise ValueError(f"{self.environment} refuses auth_expose_tokens")
         if self.queue_backend not in ("redis", "memory"):
             raise ValueError("queue_backend must be 'redis' or 'memory'")
+        if self.storage_backend not in ("local",):
+            raise ValueError("storage_backend must be 'local' (only dev/test adapter exists)")
+        if self.upload_max_bytes < 1024:
+            raise ValueError("upload_max_bytes is unreasonably small")
         return self
 
     @property

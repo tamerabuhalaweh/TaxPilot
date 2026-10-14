@@ -11,11 +11,13 @@ from app.recon import (
     AMBIGUOUS,
     AMOUNT_MISMATCH,
     CREDIT_NOTE_LINKED,
+    CREDIT_NOTE_UNVERIFIED,
     DUPLICATE_JOFOTARA,
     DUPLICATE_SALES,
     EXACT_MATCH,
     INSUFFICIENT_DATA,
     REVERSAL_NOTED,
+    REVERSAL_UNVERIFIED,
     UNMATCHED_JOFOTARA,
     UNMATCHED_SALES,
     CanonicalInvoice,
@@ -45,6 +47,7 @@ def sales_inv(
         transaction_date=kw.get("date", date(2026, 3, 15)),
         is_credit_note=kw.get("credit", False),
         is_reversal=kw.get("reversal", False),
+        reference_number=kw.get("reference_number"),
         provenance=prov("SYN-SALES", "sales_register", row, number),
     )
 
@@ -61,6 +64,7 @@ def jofo_inv(
         transaction_date=kw.get("date", date(2026, 3, 16)),
         is_credit_note=kw.get("credit", False),
         is_reversal=kw.get("reversal", False),
+        reference_number=kw.get("reference_number"),
         provenance=prov("SYN-JOFO", "jofotara_export", row, number),
     )
 
@@ -125,8 +129,11 @@ def test_duplicate_sales_keys_never_matched() -> None:
         (jofo_inv("INV-001", "100.000"),),
         req(),
     )
-    assert kinds(report) == [DUPLICATE_SALES, UNMATCHED_JOFOTARA]
+    assert kinds(report) == [DUPLICATE_SALES, AMBIGUOUS]
     assert len(report.outcomes[0].sales) == 2
+    ambiguous = next(o for o in report.outcomes if o.kind == AMBIGUOUS)
+    assert "DUPLICATE_COUNTERPART" in ambiguous.rationale
+    assert len(ambiguous.sales) == 2 and len(ambiguous.jofo) == 1
     assert "fraud" not in str(report.outcomes[0].rationale).lower()
 
 
@@ -136,7 +143,10 @@ def test_duplicate_jofotara_keys_listed_not_matched() -> None:
         (jofo_inv("INV-001", "100.000", row=2), jofo_inv("INV-001", "200.000", row=3)),
         req(),
     )
-    assert kinds(report) == [DUPLICATE_JOFOTARA, UNMATCHED_SALES]
+    assert kinds(report) == [DUPLICATE_JOFOTARA, AMBIGUOUS]
+    ambiguous = next(o for o in report.outcomes if o.kind == AMBIGUOUS)
+    assert "DUPLICATE_COUNTERPART" in ambiguous.rationale
+    assert len(ambiguous.sales) == 1 and len(ambiguous.jofo) == 2
 
 
 def test_currency_mismatch_is_ambiguous_without_delta() -> None:
@@ -151,18 +161,23 @@ def test_currency_mismatch_is_ambiguous_without_delta() -> None:
     assert "CURRENCY_MISMATCH" in outcome.rationale
 
 
-def test_credit_note_overlap_is_ambiguous_and_linked() -> None:
-    # JoFotara holds the invoice AND its credit note: the invoice still matches
-    # exactly, but the overlap needs human confirmation (nothing auto-netted).
+def test_verified_credit_note_links_without_netting() -> None:
+    # The credit note carries an explicit original-document reference naming a
+    # unique invoice: the link is verified evidence, and nothing is netted.
     report = reconcile(
-        (sales_inv("INV-001", "100.000"),),
-        (jofo_inv("INV-001", "100.000"), jofo_inv("INV-001", "100.000", credit=True, row=5)),
+        (
+            sales_inv("INV-001", "100.000"),
+            sales_inv("CN-555", "100.000", credit=True, reference_number="INV-001", row=5),
+        ),
+        (jofo_inv("INV-009", "10.000"),),
         req(),
     )
-    assert kinds(report) == [EXACT_MATCH, AMBIGUOUS, CREDIT_NOTE_LINKED]
-    ambiguous = next(o for o in report.outcomes if o.kind == AMBIGUOUS)
-    assert "CREDIT_NOTE_OVERLAP" in ambiguous.rationale
-    assert "REVIEW_ISSUER_AND_CREDIT" in ambiguous.flags
+    assert kinds(report) == [UNMATCHED_SALES, UNMATCHED_JOFOTARA, CREDIT_NOTE_LINKED]
+    linked = next(o for o in report.outcomes if o.kind == CREDIT_NOTE_LINKED)
+    assert linked.delta is None
+    assert "CREDIT_NOTE_PRESERVED" in linked.rationale
+    assert "REFERENCE_VERIFIED" in linked.flags
+    assert sorted(r.number for r in linked.sales) == ["CN-555", "INV-001"]
 
 
 def test_two_credit_notes_same_key_cluster_as_duplicates() -> None:
@@ -177,45 +192,103 @@ def test_two_credit_notes_same_key_cluster_as_duplicates() -> None:
     )
     assert kinds(report) == [DUPLICATE_JOFOTARA, EXACT_MATCH]
     assert len(next(o for o in report.outcomes if o.kind == DUPLICATE_JOFOTARA).jofo) == 2
+    assert CREDIT_NOTE_LINKED not in kinds(report)  # clustered rows are not linked
+    assert CREDIT_NOTE_UNVERIFIED not in kinds(report)
 
 
-def test_standalone_credit_note_linked_not_netted() -> None:
+def test_unverified_credit_note_preserved_without_assertion() -> None:
+    # A credit note whose reference cannot be verified is preserved as
+    # relationship-unverified: visible for review, never claimed as linked.
     report = reconcile(
         (sales_inv("INV-001", "100.000"), sales_inv("CN-001", "20.000", credit=True, row=3)),
         (jofo_inv("INV-001", "100.000"),),
         req(),
     )
-    assert CREDIT_NOTE_LINKED in kinds(report)
-    linked = next(o for o in report.outcomes if o.kind == CREDIT_NOTE_LINKED)
-    assert linked.delta is None  # never netted into an amount
-    assert "CREDIT_NOTE_PRESERVED" in linked.rationale
+    assert CREDIT_NOTE_UNVERIFIED in kinds(report)
+    unverified = next(o for o in report.outcomes if o.kind == CREDIT_NOTE_UNVERIFIED)
+    assert unverified.delta is None  # never netted into an amount
+    assert "CREDIT_NOTE_PRESERVED" in unverified.rationale
+    assert "NO_REFERENCE" in unverified.flags
+    assert CREDIT_NOTE_LINKED not in kinds(report)
 
 
-def test_reversal_noted_with_lineage() -> None:
+def test_reversal_noted_with_verified_reference() -> None:
+    report = reconcile(
+        (sales_inv("INV-009", "10.000"),),
+        (
+            jofo_inv("INV-001", "100.000"),
+            jofo_inv("RV-777", "100.000", reversal=True, reference_number="INV-001", row=6),
+        ),
+        req(),
+    )
+    assert REVERSAL_NOTED in kinds(report)
+    noted = next(o for o in report.outcomes if o.kind == REVERSAL_NOTED)
+    assert "REFERENCE_VERIFIED" in noted.flags
+    assert sorted(r.number for r in noted.jofo) == ["INV-001", "RV-777"]
+
+
+def test_reversal_without_reference_unverified() -> None:
     report = reconcile(
         (sales_inv("INV-001", "100.000"),),
         (jofo_inv("INV-001", "100.000"), jofo_inv("INV-001-R", "100.000", reversal=True, row=6)),
         req(),
     )
-    assert REVERSAL_NOTED in kinds(report)
-    noted = next(o for o in report.outcomes if o.kind == REVERSAL_NOTED)
-    assert noted.jofo[0].provenance is not None
-    assert noted.jofo[0].provenance.row_number == 6
+    assert REVERSAL_UNVERIFIED in kinds(report)
+    assert REVERSAL_NOTED not in kinds(report)
 
 
-def test_missing_values_are_insufficient_never_zero() -> None:
+def test_missing_amount_preserves_presence_both_directions() -> None:
+    # F1: a sales invoice with a missing amount still EXISTS. Its JoFotara
+    # counterpart must read as a comparison problem, never as absent.
     report = reconcile(
-        (
-            sales_inv("INV-001", None),
-            sales_inv("", "10.000", row=3),
-            sales_inv("INV-003", "10.000", currency=None, row=4),
-        ),
+        (sales_inv("INV-001", None),),
         (jofo_inv("INV-001", "10.000"),),
         req(),
     )
-    insufficient = [o for o in report.outcomes if o.kind == INSUFFICIENT_DATA]
-    assert len(insufficient) == 3
-    assert any("MISSING_AMOUNT" in o.rationale for o in insufficient)
+    assert kinds(report) == [AMBIGUOUS]
+    outcome = report.outcomes[0]
+    assert "COMPARISON_INSUFFICIENT" in outcome.rationale
+    assert "MISSING_AMOUNT" in outcome.rationale
+    assert UNMATCHED_JOFOTARA not in kinds(report)
+    reverse = reconcile(
+        (sales_inv("INV-001", "10.000"),),
+        (jofo_inv("INV-001", None),),
+        req(),
+    )
+    assert kinds(reverse) == [AMBIGUOUS]
+    assert "COMPARISON_INSUFFICIENT" in reverse.outcomes[0].rationale
+    assert UNMATCHED_SALES not in kinds(reverse)
+
+
+def test_missing_currency_preserves_presence_both_directions() -> None:
+    report = reconcile(
+        (sales_inv("INV-001", "10.000", currency=None),),
+        (jofo_inv("INV-001", "10.000"),),
+        req(),
+    )
+    assert kinds(report) == [AMBIGUOUS]
+    assert "MISSING_CURRENCY" in report.outcomes[0].rationale
+    reverse = reconcile(
+        (sales_inv("INV-001", "10.000"),),
+        (jofo_inv("INV-001", "10.000", currency=None),),
+        req(),
+    )
+    assert kinds(reverse) == [AMBIGUOUS]
+    assert "MISSING_CURRENCY" in reverse.outcomes[0].rationale
+
+
+def test_missing_key_is_insufficient_never_zero() -> None:
+    report = reconcile(
+        (
+            sales_inv("", "10.000", row=3),
+            sales_inv("INV-003", "10.000", currency=None, row=4),
+        ),
+        (jofo_inv("INV-003", "10.000"),),
+        req(),
+    )
+    by_kind = kinds(report)
+    assert by_kind.count(INSUFFICIENT_DATA) == 1  # blank key cannot be placed
+    assert by_kind.count(AMBIGUOUS) == 1  # key present, comparison impossible
     assert not any(o.kind == EXACT_MATCH for o in report.outcomes)
 
 
@@ -247,6 +320,68 @@ def test_period_positions_surfaced_not_dropped() -> None:
     )
     assert kinds(report) == [EXACT_MATCH]
     assert "PERIOD_OUTSIDE" in report.outcomes[0].flags
+
+
+def test_duplicate_with_incomplete_member_and_counterpart() -> None:
+    # F2 mixed: a duplicate sales cluster (one member amount-less) plus a
+    # JoFotara counterpart. No false unmatched, no silent zero-fill.
+    report = reconcile(
+        (
+            sales_inv("INV-001", None, row=2),
+            sales_inv("INV-001", "100.000", row=3),
+        ),
+        (jofo_inv("INV-001", "100.000"),),
+        req(),
+    )
+    assert kinds(report) == [DUPLICATE_SALES, AMBIGUOUS]
+    assert UNMATCHED_SALES not in kinds(report) and UNMATCHED_JOFOTARA not in kinds(report)
+
+
+def test_duplicate_clusters_on_both_sides_link_ambiguously() -> None:
+    report = reconcile(
+        (
+            sales_inv("INV-001", "100.000", row=2),
+            sales_inv("INV-001", "100.000", row=3),
+        ),
+        (
+            jofo_inv("INV-001", "100.000", row=2),
+            jofo_inv("INV-001", "100.000", row=4),
+        ),
+        req(),
+    )
+    assert kinds(report) == [DUPLICATE_SALES, DUPLICATE_JOFOTARA, AMBIGUOUS]
+    ambiguous = next(o for o in report.outcomes if o.kind == AMBIGUOUS)
+    assert len(ambiguous.sales) == 2 and len(ambiguous.jofo) == 2
+
+
+def test_fingerprint_stable_under_duplicate_permutation() -> None:
+    # F3: equal-key duplicates with distinct provenance must hash identically
+    # regardless of input order.
+    sales = (
+        sales_inv("INV-001", "100.000", row=2),
+        sales_inv("INV-001", "100.000", row=9),
+        sales_inv("INV-002", "50.000", row=3),
+    )
+    jofo = (jofo_inv("INV-001", "100.000", row=4), jofo_inv("INV-002", "50.000", row=5))
+    first = reconcile(sales, jofo, req())
+    second = reconcile(tuple(reversed(sales)), tuple(reversed(jofo)), req())
+    assert first.fingerprint == second.fingerprint
+    assert [o.kind for o in first.outcomes] == [o.kind for o in second.outcomes]
+
+
+def test_fingerprint_stable_under_ambiguous_permutation() -> None:
+    sales = (
+        sales_inv("INV-001", "100.000", currency="JOD", row=2),
+        sales_inv("INV-002", "200.000", row=3),
+    )
+    jofo = (
+        jofo_inv("INV-002", "200.000", row=5),
+        jofo_inv("INV-001", "100.000", currency="USD", row=4),
+    )
+    first = reconcile(sales, jofo, req())
+    assert [o.kind for o in first.outcomes] == [AMBIGUOUS, EXACT_MATCH]
+    second = reconcile(tuple(reversed(sales)), tuple(reversed(jofo)), req())
+    assert first.fingerprint == second.fingerprint
 
 
 def test_determinism_under_reordered_input() -> None:
@@ -325,6 +460,45 @@ def test_demo_slice_mixed_jordan_workbook() -> None:
     assert report.counts["EXACT_MATCH"] == 2
     assert report.counts["UNMATCHED_SALES"] == 1  # INV-0002 (450.000)
     assert report.counts["UNMATCHED_JOFOTARA"] == 1  # INV-0077
-    assert report.counts["CREDIT_NOTE_LINKED"] == 1
+    assert report.counts["CREDIT_NOTE_UNVERIFIED"] == 1  # CN-0009 states no reference
     assert report.sales_total == 4 and report.jofo_total == 3
     assert len(report.fingerprint) == 64
+
+
+def test_unresolvable_reference_stays_unverified() -> None:
+    report = reconcile(
+        (sales_inv("INV-001", "100.000"),),
+        (
+            jofo_inv("INV-001", "100.000"),
+            jofo_inv(
+                "CN-002",
+                "30.000",
+                credit=True,
+                reference_number="INV-404",
+                row=5,
+            ),
+        ),
+        req(),
+    )
+    assert kinds(report) == [EXACT_MATCH, CREDIT_NOTE_UNVERIFIED]
+    unverified = next(o for o in report.outcomes if o.kind == CREDIT_NOTE_UNVERIFIED)
+    assert "REFERENCE_UNRESOLVED" in unverified.flags
+    assert CREDIT_NOTE_LINKED not in kinds(report)
+
+
+def test_reference_matching_multiple_targets_stays_unverified() -> None:
+    # A credit referencing a duplicated invoice number cannot pick a target.
+    report = reconcile(
+        (
+            sales_inv("INV-001", "100.000", row=2),
+            sales_inv("INV-001", "100.000", row=3),
+            sales_inv("CN-003", "50.000", credit=True, reference_number="INV-001", row=4),
+        ),
+        (jofo_inv("INV-009", "10.000"),),
+        req(),
+    )
+    assert DUPLICATE_SALES in kinds(report)
+    assert CREDIT_NOTE_UNVERIFIED in kinds(report)
+    unverified = next(o for o in report.outcomes if o.kind == CREDIT_NOTE_UNVERIFIED)
+    assert "AMBIGUOUS_TARGET" in unverified.flags
+    assert CREDIT_NOTE_LINKED not in kinds(report)

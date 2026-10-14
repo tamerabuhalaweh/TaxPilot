@@ -1,10 +1,16 @@
 """Deterministic sales↔JoFotara invoice matching (REC-001..004 slice).
 
-Strategy (recorded in every fingerprint): exact (issuer, number) key match;
-single-to-single comparison only (many-to-one never auto-matched); duplicates
-clustered per side and excluded from matching; credit notes/reversals linked,
-never netted; currency mismatch and credit-note overlap are review-required
-ambiguities; missing values are insufficient data, never zero.
+Strategy (recorded in every fingerprint): presence is matched on exact
+(issuer, number) keys first — a row with a valid key but missing amount or
+currency still proves presence; only the comparison is then insufficient
+(review-required), never reported as absence. Duplicates cluster per side and
+kind; their counterparts on the other side become ambiguous links, never false
+unmatched findings. Single-to-single comparison only (many-to-one never
+auto-matched). Credit notes and reversals link ONLY through an explicit
+original-document reference naming an existing invoice; otherwise they are
+preserved as relationship-unverified. Missing keys are insufficient data;
+missing values are never zero. All ordering is total (keys, values, flags,
+provenance), so fingerprints are stable under any input permutation.
 """
 
 from __future__ import annotations
@@ -18,11 +24,13 @@ from app.recon.contracts import (
     AMBIGUOUS,
     AMOUNT_MISMATCH,
     CREDIT_NOTE_LINKED,
+    CREDIT_NOTE_UNVERIFIED,
     DUPLICATE_JOFOTARA,
     DUPLICATE_SALES,
     EXACT_MATCH,
     INSUFFICIENT_DATA,
     REVERSAL_NOTED,
+    REVERSAL_UNVERIFIED,
     UNMATCHED_JOFOTARA,
     UNMATCHED_SALES,
     CanonicalInvoice,
@@ -67,20 +75,58 @@ def _period_flag(row_date: date | None, start: date | None, end: date | None) ->
     return "PERIOD_WITHIN"
 
 
-def _missing_parts(row: CanonicalInvoice) -> tuple[str, ...]:
+def _sort_key(
+    row: CanonicalInvoice,
+) -> tuple[str, str, str, str, str, str, bool, bool, str, str, str, int, str]:
+    """Total order over identity, values, flags, and provenance.
+
+    Two rows compare equal here only when indistinguishable in every
+    decision-relevant field — in which case their serialized order cannot
+    affect the fingerprint either.
+    """
+    issuer, number = row.key()
+    provenance = row.provenance
+    return (
+        issuer,
+        number,
+        row.amount_raw,
+        str(row.amount) if row.amount is not None else "",
+        row.currency or "",
+        row.transaction_date.isoformat() if row.transaction_date else "",
+        row.is_credit_note,
+        row.is_reversal,
+        row.reference_number or "",
+        provenance.dataset_id if provenance else "",
+        provenance.source if provenance else "",
+        provenance.row_number if provenance else 0,
+        provenance.raw_invoice if provenance else "",
+    )
+
+
+def _key_missing(row: CanonicalInvoice) -> tuple[str, ...]:
     missing: list[str] = []
     if not row.number.strip():
         missing.append("invoice_number")
+    if not row.issuer.strip():
+        missing.append("issuer")
+    return tuple(f"MISSING_{m.upper()}" for m in missing)
+
+
+def _value_missing(row: CanonicalInvoice) -> tuple[str, ...]:
+    missing: list[str] = []
     if row.amount is None:
-        missing.append("amount")
+        missing.append("MISSING_AMOUNT")
     if row.currency is None:
-        missing.append("currency")
+        missing.append("MISSING_CURRENCY")
     return tuple(missing)
 
 
-def _sort_key(row: CanonicalInvoice) -> tuple[str, str, str]:
-    issuer, number = row.key()
-    return (issuer, number, row.amount_raw)
+def _kind_class(row: CanonicalInvoice) -> str:
+    if row.is_reversal:
+        return "REVERSAL"
+    if row.is_credit_note:
+        return "CREDIT"
+    return "INVOICE"
 
 
 def reconcile(
@@ -112,8 +158,8 @@ def reconcile(
             MatchOutcome(
                 kind=kind,
                 rule=rule_for(kind, request.jurisdiction, request.rules_version),
-                sales=sales_rows,
-                jofo=jofo_rows,
+                sales=tuple(sorted(sales_rows, key=_sort_key)),
+                jofo=tuple(sorted(jofo_rows, key=_sort_key)),
                 delta=delta,
                 currency=currency,
                 rationale=rationale,
@@ -126,68 +172,92 @@ def reconcile(
         positions.discard("PERIOD_WITHIN")
         return tuple(sorted(positions))
 
-    # Stage 1: rows that cannot participate (missing key/amount/currency).
-    sales_open: list[CanonicalInvoice] = []
+    # Stage 1: rows without an identity key cannot be placed anywhere.
+    sales_keyed: list[CanonicalInvoice] = []
     for row in sorted(sales, key=_sort_key):
-        missing = _missing_parts(row)
+        missing = _key_missing(row)
         if missing:
-            emit(
-                INSUFFICIENT_DATA, sales_rows=(row,), rationale=tuple(f"MISSING_{m.upper()}" for m in missing)
-            )
+            emit(INSUFFICIENT_DATA, sales_rows=(row,), rationale=missing)
         else:
-            sales_open.append(row)
-    jofo_open: list[CanonicalInvoice] = []
+            sales_keyed.append(row)
+    jofo_keyed: list[CanonicalInvoice] = []
     for row in sorted(jofo, key=_sort_key):
-        missing = _missing_parts(row)
+        missing = _key_missing(row)
         if missing:
-            emit(
-                INSUFFICIENT_DATA, jofo_rows=(row,), rationale=tuple(f"MISSING_{m.upper()}" for m in missing)
-            )
+            emit(INSUFFICIENT_DATA, jofo_rows=(row,), rationale=missing)
         else:
-            jofo_open.append(row)
+            jofo_keyed.append(row)
 
-    # Stage 2: duplicate clusters per side (review-required, never matched).
-    # Clusters are kind-aware: an invoice plus its credit note is a normal
-    # business pattern (linked later), not a duplicate; two identical invoices
-    # are. Kind classes: invoice, credit note, reversal.
+    # Stage 2: duplicate clusters per side and kind (review-required; their
+    # members leave the matching pool, but their counterparts do NOT become
+    # unmatched — see stage 2b).
     Grouped = dict[tuple[tuple[str, str], str], list[CanonicalInvoice]]
-
-    def kind_class(row: CanonicalInvoice) -> str:
-        if row.is_reversal:
-            return "REVERSAL"
-        if row.is_credit_note:
-            return "CREDIT"
-        return "INVOICE"
 
     def clusters(
         rows: list[CanonicalInvoice],
     ) -> tuple[Grouped, list[CanonicalInvoice]]:
         grouped: Grouped = {}
         for row in rows:
-            grouped.setdefault((row.key(), kind_class(row)), []).append(row)
+            grouped.setdefault((row.key(), _kind_class(row)), []).append(row)
         singles = [group[0] for group in grouped.values() if len(group) == 1]
         dupes = {key: group for key, group in grouped.items() if len(group) > 1}
         return dupes, singles
 
-    sales_dupes, sales_singles = clusters(sales_open)
-    jofo_dupes, jofo_singles = clusters(jofo_open)
-    for key in sorted(sales_dupes):
+    sales_dupes, sales_singles = clusters(sales_keyed)
+    jofo_dupes, jofo_singles = clusters(jofo_keyed)
+    for cluster_key in sorted(sales_dupes):
+        members = sales_dupes[cluster_key]
         emit(
             DUPLICATE_SALES,
-            sales_rows=tuple(sales_dupes[key]),
+            sales_rows=tuple(members),
             rationale=("DUPLICATE_KEY_SALES",),
-            flags=period_flags(tuple(sales_dupes[key])),
+            flags=period_flags(tuple(members)),
         )
-    for key in sorted(jofo_dupes):
+    for cluster_key in sorted(jofo_dupes):
+        members = jofo_dupes[cluster_key]
         emit(
             DUPLICATE_JOFOTARA,
-            jofo_rows=tuple(jofo_dupes[key]),
+            jofo_rows=tuple(members),
             rationale=("DUPLICATE_KEY_JOFOTARA",),
-            flags=period_flags(tuple(jofo_dupes[key])),
+            flags=period_flags(tuple(members)),
         )
 
-    # Stage 3: split credit notes / reversals from plain invoices (singles only;
-    # duplicates were already emitted above and leave the matching pool).
+    # Stage 2b: duplicate counterparts are ambiguous, never unmatched. Only
+    # rows sharing the duplicated (key, kind-class) prove presence on the other
+    # side; rows of other kinds proceed to normal matching.
+    sales_consumed: set[int] = set()
+    jofo_consumed: set[int] = set()
+    sales_positions = {id(row): index for index, row in enumerate(sales_singles)}
+    jofo_positions = {id(row): index for index, row in enumerate(jofo_singles)}
+
+    def same_kind_counterparts(
+        rows: list[CanonicalInvoice], key: tuple[str, str], kind: str
+    ) -> list[CanonicalInvoice]:
+        return [r for r in rows if r.key() == key and _kind_class(r) == kind]
+
+    for cluster_key in sorted(set(sales_dupes) | set(jofo_dupes)):
+        key, kind = cluster_key
+        sales_members = sales_dupes.get(cluster_key, [])
+        jofo_members = jofo_dupes.get(cluster_key, [])
+        sales_others = same_kind_counterparts(sales_singles, key, kind)
+        jofo_others = same_kind_counterparts(jofo_singles, key, kind)
+        if not sales_others and not jofo_others and not (sales_members and jofo_members):
+            continue  # cluster stands alone; nothing proven present elsewhere
+        emit(
+            AMBIGUOUS,
+            sales_rows=tuple(sales_members + sales_others),
+            jofo_rows=tuple(jofo_members + jofo_others),
+            rationale=("DUPLICATE_COUNTERPART",),
+            flags=period_flags(tuple(sales_members + sales_others + jofo_members + jofo_others)),
+        )
+        for row in sales_others:
+            sales_consumed.add(sales_positions[id(row)])
+        for row in jofo_others:
+            jofo_consumed.add(jofo_positions[id(row)])
+    sales_live = [r for i, r in enumerate(sales_singles) if i not in sales_consumed]
+    jofo_live = [r for i, r in enumerate(jofo_singles) if i not in jofo_consumed]
+
+    # Stage 3: split credit notes / reversals from plain invoices.
     def split(
         rows: list[CanonicalInvoice],
     ) -> tuple[list[CanonicalInvoice], list[CanonicalInvoice], list[CanonicalInvoice]]:
@@ -196,22 +266,39 @@ def reconcile(
         reversals = [r for r in rows if r.is_reversal]
         return plain, credits, reversals
 
-    sales_plain, sales_credits, sales_reversals = split(sales_singles)
-    jofo_plain, jofo_credits, jofo_reversals = split(jofo_singles)
+    sales_plain, sales_credits, sales_reversals = split(sales_live)
+    jofo_plain, jofo_credits, jofo_reversals = split(jofo_live)
 
     # Stage 4: single-to-single exact-key matching (never many-to-one: every
-    # key is unique on both sides here by construction).
+    # key is unique on both sides here by construction). Presence needs keys
+    # only; comparison additionally needs amounts and currencies — when those
+    # are missing on either side the pair is ambiguous, never absent.
     jofo_by_key = {row.key(): row for row in jofo_plain}
     matched_jofo_keys: set[tuple[str, str]] = set()
-    credit_keys = {r.key() for r in (*sales_credits, *jofo_credits)}
     for row in sorted(sales_plain, key=_sort_key):
         counterpart = jofo_by_key.get(row.key())
         flags = period_flags((row,) + ((counterpart,) if counterpart else ()))
         if counterpart is None:
-            emit(UNMATCHED_SALES, sales_rows=(row,), rationale=("MISSING_IN_JOFOTARA",), flags=flags)
+            emit(
+                UNMATCHED_SALES,
+                sales_rows=(row,),
+                rationale=("MISSING_IN_JOFOTARA",),
+                flags=flags,
+            )
             continue
         matched_jofo_keys.add(row.key())
-        assert row.currency is not None and counterpart.currency is not None  # stage-1 guarantees
+        missing = _value_missing(row) + _value_missing(counterpart)
+        if missing:
+            emit(
+                AMBIGUOUS,
+                sales_rows=(row,),
+                jofo_rows=(counterpart,),
+                rationale=("COMPARISON_INSUFFICIENT", *missing),
+                flags=flags,
+            )
+            continue
+        assert row.currency is not None and counterpart.currency is not None
+        assert row.amount is not None and counterpart.amount is not None
         if row.currency != counterpart.currency:
             emit(
                 AMBIGUOUS,
@@ -222,7 +309,7 @@ def reconcile(
                 flags=flags,
             )
             continue
-        delta = _exact_delta(row.amount, counterpart.amount)  # type: ignore[arg-type]
+        delta = _exact_delta(row.amount, counterpart.amount)
         if abs(delta) <= request.tolerance:
             emit(
                 EXACT_MATCH,
@@ -243,16 +330,6 @@ def reconcile(
                 rationale=("AMOUNT_DIFFERS",),
                 flags=flags,
             )
-        if row.key() in credit_keys:
-            emit(
-                AMBIGUOUS,
-                sales_rows=(row,),
-                jofo_rows=(counterpart,),
-                delta=delta if row.currency == counterpart.currency else None,
-                currency=row.currency if row.currency == counterpart.currency else None,
-                rationale=("CREDIT_NOTE_OVERLAP",),
-                flags=flags + ("REVIEW_ISSUER_AND_CREDIT",),
-            )
 
     for row in sorted(jofo_plain, key=_sort_key):
         if row.key() not in matched_jofo_keys:
@@ -263,28 +340,61 @@ def reconcile(
                 flags=period_flags((row,)),
             )
 
-    # Stage 5: credit notes and reversals link (never netted).
-    invoice_keys = {r.key() for r in (*sales_plain, *jofo_plain)}
+    # Stage 5: credit notes and reversals link ONLY through an explicit
+    # original-document reference naming a unique existing invoice (same
+    # issuer scope); otherwise they are preserved as relationship-unverified
+    # (never asserted as linked). Candidate targets include duplicate-cluster
+    # members so multi-candidate references stay unverified, never guessed.
+    plain_pool = [r for r in (*sales_keyed, *jofo_keyed) if not r.is_credit_note and not r.is_reversal]
+
+    def link(
+        row: CanonicalInvoice,
+        linked_kind: str,
+        unverified_kind: str,
+        noun: str,
+    ) -> None:
+        reference = (row.reference_number or "").strip()
+        on_sales = row in sales_credits or row in sales_reversals
+        holders = (row,) if on_sales else ()
+        holders_jofo = () if on_sales else (row,)
+        if not reference:
+            emit(
+                unverified_kind,
+                sales_rows=holders,
+                jofo_rows=holders_jofo,
+                currency=row.currency,
+                rationale=(f"{noun}_PRESERVED",),
+                flags=period_flags((row,)) + ("NO_REFERENCE",),
+            )
+            return
+        targets = [r for r in plain_pool if r.number.strip() == reference and r.key()[0] == row.key()[0]]
+        if len(targets) != 1:
+            emit(
+                unverified_kind,
+                sales_rows=holders,
+                jofo_rows=holders_jofo,
+                currency=row.currency,
+                rationale=(f"{noun}_PRESERVED",),
+                flags=period_flags((row,))
+                + (("REFERENCE_UNRESOLVED",) if not targets else ("AMBIGUOUS_TARGET",)),
+            )
+            return
+        (target,) = targets
+        target_sales = holders + ((target,) if target in sales_plain else ())
+        target_jofo = holders_jofo + ((target,) if target in jofo_plain else ())
+        emit(
+            linked_kind,
+            sales_rows=tuple(sorted(target_sales, key=_sort_key)),
+            jofo_rows=tuple(sorted(target_jofo, key=_sort_key)),
+            currency=row.currency,
+            rationale=(f"{noun}_PRESERVED",),
+            flags=period_flags((row, target)) + ("REFERENCE_VERIFIED",),
+        )
+
     for row in sorted((*sales_credits, *jofo_credits), key=_sort_key):
-        linked = row.key() in invoice_keys
-        emit(
-            CREDIT_NOTE_LINKED,
-            sales_rows=(row,) if row in sales_credits else (),
-            jofo_rows=(row,) if row in jofo_credits else (),
-            currency=row.currency,
-            rationale=("CREDIT_NOTE_PRESERVED",),
-            flags=period_flags((row,)) + (() if linked else ("UNLINKED",)),
-        )
+        link(row, CREDIT_NOTE_LINKED, CREDIT_NOTE_UNVERIFIED, "CREDIT_NOTE")
     for row in sorted((*sales_reversals, *jofo_reversals), key=_sort_key):
-        linked = row.key() in invoice_keys
-        emit(
-            REVERSAL_NOTED,
-            sales_rows=(row,) if row in sales_reversals else (),
-            jofo_rows=(row,) if row in jofo_reversals else (),
-            currency=row.currency,
-            rationale=("REVERSAL_PRESERVED",),
-            flags=period_flags((row,)) + (() if linked else ("UNLINKED",)),
-        )
+        link(row, REVERSAL_NOTED, REVERSAL_UNVERIFIED, "REVERSAL")
 
     counts: dict[str, int] = {}
     for outcome in outcomes:
@@ -317,14 +427,17 @@ def _fingerprint(request: ReconcileRequest, outcomes: list[MatchOutcome]) -> str
             row.transaction_date.isoformat() if row.transaction_date else None,
             row.is_credit_note,
             row.is_reversal,
-            [
-                row.provenance.dataset_id,
-                row.provenance.source,
-                row.provenance.row_number,
-                row.provenance.raw_invoice,
-            ]
-            if row.provenance
-            else None,
+            row.reference_number,
+            (
+                [
+                    row.provenance.dataset_id,
+                    row.provenance.source,
+                    row.provenance.row_number,
+                    row.provenance.raw_invoice,
+                ]
+                if row.provenance
+                else None
+            ),
         ]
 
     def outcome_blob(outcome: MatchOutcome) -> object:

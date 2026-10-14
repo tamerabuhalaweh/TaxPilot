@@ -28,6 +28,7 @@ def inv(number: str = "INV-1", amount: str | None = "10.000", **kw) -> Canonical
         amount_raw=amount or "",
         currency=kw.get("currency", "JOD"),
         transaction_date=kw.get("date", date(2026, 3, 15)),
+        reference_number=kw.get("reference_number"),
         provenance=prov(kw.get("row", 2)),
     )
 
@@ -95,12 +96,33 @@ def test_currency_normalized_and_key_rules() -> None:
     assert inv("INV-1", issuer="  شركة المثال  ").key()[0] == "شركة المثال"
 
 
+def test_reference_number_verified_vs_unverified() -> None:
+    assert inv(reference_number="INV-001").reference_number == "INV-001"
+    assert inv(reference_number="   ").reference_number is None  # blank means absent
+    assert inv().reference_number is None
+    with pytest.raises(TypeError):
+        CanonicalInvoice(
+            issuer="A",
+            number="1",
+            amount=Decimal("1"),
+            amount_raw="1",
+            currency="JOD",
+            transaction_date=None,
+            reference_number=42,  # type: ignore[arg-type]
+            provenance=prov(),
+        )
+
+
 def test_rule_references() -> None:
     assert rule_for("UNMATCHED_SALES", "JO", "1") == "JO/REC-001/1"
     assert rule_for("UNMATCHED_JOFOTARA", "JO", "1") == "JO/REC-002/1"
     assert rule_for("AMOUNT_MISMATCH", "JO", "1") == "JO/REC-003/1"
     assert rule_for("DUPLICATE_SALES", "JO", "1") == "JO/REC-004/1"
     assert rule_for("CREDIT_NOTE_LINKED", "JO", "1") == "JO/NOTE/1"
+    assert rule_for("CREDIT_NOTE_UNVERIFIED", "JO", "1") == "JO/NOTE/1"
+    assert rule_for("REVERSAL_NOTED", "JO", "1") == "JO/NOTE/1"
+    assert rule_for("REVERSAL_UNVERIFIED", "JO", "1") == "JO/NOTE/1"
+    assert rule_for("AMBIGUOUS", "JO", "1") == "JO/REC-003/1"
 
 
 def test_request_validation() -> None:

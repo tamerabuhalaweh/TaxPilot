@@ -36,7 +36,9 @@ DUPLICATE_SALES = "DUPLICATE_SALES"
 DUPLICATE_JOFOTARA = "DUPLICATE_JOFOTARA"
 AMBIGUOUS = "AMBIGUOUS"
 CREDIT_NOTE_LINKED = "CREDIT_NOTE_LINKED"
+CREDIT_NOTE_UNVERIFIED = "CREDIT_NOTE_UNVERIFIED"
 REVERSAL_NOTED = "REVERSAL_NOTED"
+REVERSAL_UNVERIFIED = "REVERSAL_UNVERIFIED"
 INSUFFICIENT_DATA = "INSUFFICIENT_DATA"
 
 _RULE_BY_KIND = {
@@ -48,7 +50,9 @@ _RULE_BY_KIND = {
     DUPLICATE_JOFOTARA: "REC-004",
     AMBIGUOUS: "REC-003",
     CREDIT_NOTE_LINKED: "NOTE",
+    CREDIT_NOTE_UNVERIFIED: "NOTE",
     REVERSAL_NOTED: "NOTE",
+    REVERSAL_UNVERIFIED: "NOTE",
     INSUFFICIENT_DATA: "NOTE",
 }
 
@@ -71,7 +75,9 @@ class CanonicalInvoice:
 
     Identifiers stay verbatim strings (leading zeros preserved). ``amount`` is
     the configured compare amount (net for sales); None means missing (never
-    zero). Credit notes and reversals are linked records, never netted.
+    zero). Credit notes and reversals are linked records, never netted: a link
+    is only asserted when ``reference_number`` names an existing invoice
+    (verified); otherwise the row is preserved as relationship-unverified.
     """
 
     issuer: str
@@ -82,6 +88,7 @@ class CanonicalInvoice:
     transaction_date: date | None
     is_credit_note: bool = False
     is_reversal: bool = False
+    reference_number: str | None = None
     provenance: InvoiceProvenance | None = None
 
     def __post_init__(self) -> None:
@@ -103,6 +110,11 @@ class CanonicalInvoice:
             object.__setattr__(self, "currency", normalized)
         if not isinstance(self.is_credit_note, bool) or not isinstance(self.is_reversal, bool):
             raise TypeError("is_credit_note/is_reversal must be bool")
+        if self.reference_number is not None:
+            if not isinstance(self.reference_number, str):
+                raise TypeError("reference_number must be text (original-document reference)")
+            if not self.reference_number.strip():
+                object.__setattr__(self, "reference_number", None)
         if self.provenance is not None and not isinstance(self.provenance, InvoiceProvenance):
             raise TypeError("provenance must be InvoiceProvenance")
 

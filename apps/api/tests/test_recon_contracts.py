@@ -48,8 +48,8 @@ def test_float_and_int_amounts_rejected() -> None:
         CanonicalInvoice(
             issuer="A",
             number="1",
-            amount=0.1,
-            amount_raw="0.1",  # type: ignore[arg-type]
+            amount=0.1,  # type: ignore[arg-type]
+            amount_raw="0.1",
             currency="JOD",
             transaction_date=None,
             provenance=prov(),
@@ -58,8 +58,8 @@ def test_float_and_int_amounts_rejected() -> None:
         CanonicalInvoice(
             issuer="A",
             number="1",
-            amount=100,
-            amount_raw="100",  # type: ignore[arg-type]
+            amount=100,  # type: ignore[arg-type]
+            amount_raw="100",
             currency="JOD",
             transaction_date=None,
             provenance=prov(),
@@ -133,7 +133,7 @@ def test_empty_inputs_stable_report() -> None:
 
 def test_input_types_rejected() -> None:
     with pytest.raises(TypeError):
-        reconcile([inv()], (inv(),), req())  # type: ignore[list-item]
+        reconcile([inv()], (inv(),), req())  # type: ignore[arg-type]
     with pytest.raises(TypeError):
         reconcile((inv(),), (inv(),), "request")  # type: ignore[arg-type]
 
@@ -193,6 +193,7 @@ def test_sales_adapter_valid_and_failed_rows() -> None:
     assert len(invoices) == 1 and len(skipped) == 1
     assert invoices[0].number == "000123" and invoices[0].amount == Decimal("1234.500")
     assert invoices[0].issuer == "Example Trading LLC"
+    assert invoices[0].provenance is not None
     assert invoices[0].provenance.row_number == 2
     assert skipped[0].row_number == 3
 
@@ -203,7 +204,7 @@ def test_sales_adapter_rejects_bad_arguments() -> None:
     with pytest.raises(ValueError):
         sales_invoices_from_normalized((), dataset_id="S", issuer=" ")
     with pytest.raises(TypeError):
-        sales_invoices_from_normalized(("nope",), dataset_id="S", issuer="X")  # type: ignore[tuple-item]
+        sales_invoices_from_normalized(("nope",), dataset_id="S", issuer="X")  # type: ignore[arg-type]
 
 
 def test_adapter_end_to_end_exact_match() -> None:

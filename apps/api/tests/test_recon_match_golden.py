@@ -199,6 +199,7 @@ def test_reversal_noted_with_lineage() -> None:
     )
     assert REVERSAL_NOTED in kinds(report)
     noted = next(o for o in report.outcomes if o.kind == REVERSAL_NOTED)
+    assert noted.jofo[0].provenance is not None
     assert noted.jofo[0].provenance.row_number == 6
 
 
@@ -262,6 +263,7 @@ def test_evidence_lineage_preserved() -> None:
         (sales_inv("INV-001", "100.000", row=7),), (jofo_inv("INV-001", "100.000", row=9),), req()
     )
     outcome = report.outcomes[0]
+    assert outcome.sales[0].provenance is not None and outcome.jofo[0].provenance is not None
     assert outcome.sales[0].provenance.dataset_id == "SYN-SALES"
     assert outcome.sales[0].provenance.row_number == 7
     assert outcome.jofo[0].provenance.dataset_id == "SYN-JOFO"

@@ -17,6 +17,11 @@ KMS/region, scanner + release evidence, retention mechanics.
 
 ## 1. Build order (dependency-ordered, non-overlapping)
 
+Canonical migration numbering (mirrored in the security architecture doc):
+**0006 = EP-04C1 durable jobs/outbox; 0007 = EP-04C4 scan verdicts/release.**
+Neither file exists until its PR is approved — and every PR kickoff must
+recheck numbering and main HEAD so no worker ever creates a competing 0006.
+
 ### EP-04C1 — Durable PostgreSQL jobs + recovery (#35)
 Scope: `extraction_jobs` table + migration 0006 (states, attempts, fencing
 owner/expiry, idempotency key, payload hash, terminal error; CHECKs; tenant
@@ -63,9 +68,10 @@ Rollback: readiness gate flips back to local-only; uploads 503 in prod.
 
 ### EP-04C4 — Malware scanning + append-only release + gated extraction
 Scope (only after scanner decision): `scan_verdicts` + `release_authorizations`
-append-only tables (migration 0007 PROPOSED: intake FK, sha binding, scanner id/
-engine version, verdict enum incl. UNSUPPORTED/FAILED/TIMEOUT, policy version,
-expiry); scanner worker (GuardDuty EventBridge consumer OR ClamAV daemon —
+append-only tables (migration 0007 PROPOSED: intake FK, sha + object-version
+binding, provider-aware evidence per architecture §4.1 — engine/signature
+version recorded only when supplied, else `not exposed by vendor`, never
+fabricated); scanner worker (GuardDuty EventBridge consumer OR ClamAV daemon —
 per decision); TBAC-style deny-unless-`NO_THREATS_FOUND`; hash re-verification
 at release AND at extraction start; re-scan on engine/policy change; audit
 `scan.received/verdict/released/expired`.
@@ -73,9 +79,11 @@ Files: migration 0007, `apps/api/app/scan/` (new), worker handler, release
 checks in C1 job execution path.
 Estimate: 5–8 days.
 Tests (attacker matrix §3): EICAR-style fixture infected → INFECTED, never
-released; forged verdict (wrong hash/signer) refused; missing verdict refused;
- swapped object hash refused; UNSUPPORTED/FAILED/TIMEOUT never clean; expired
-release refused; concurrent reprocess single-release; revoked policy re-scans.
+released; forged event (unknown source / failed transport auth) refused;
+replayed verdict (same EventBridge event ID delivered twice) single-effect;
+swapped object version (verdict for v1 presented against v2 bytes) refused;
+UNSUPPORTED/FAILED/TIMEOUT never clean; expired release refused; concurrent
+reprocess single-release; revoked policy re-scans.
 Rollback: releases stop issuing; quarantine stays closed.
 
 ### EP-04C5 — Retention/deletion + operations + release drills
@@ -99,7 +107,7 @@ verdict trust), C5 (DEC-02 periods + legal authority + backup targets).
 | Attack | Expected | Owner PR |
 |---|---|---|
 | Malicious file (EICAR-style, polyglot, bomb) | Refused/quarantined, never extracted | C4 (intake guards already: EP-04A) |
-| Fake scan-clean (forged signer, wrong hash) | Refused, audited | C4 |
+| Fake scan-clean / forged event / replayed verdict / swapped object version | Refused (single-effect on replay), audited | C4 |
 | Missing/untrusted/expired verdict | Refused, no extraction | C4 |
 | Swapped object hash post-verdict | Refused at release + at job start | C4 |
 | Concurrent reprocess / duplicate delivery | Single effect (idempotency keys) | C1 |

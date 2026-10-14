@@ -11,11 +11,17 @@
 - Scanning: GuardDuty Malware Protection for S3 (per-bucket plans, isolated
   in-region scanning VPC, `GuardDutyMalwareScanStatus` tags
   `NO_THREATS_FOUND/THREATS_FOUND/UNSUPPORTED/ACCESS_DENIED/FAILED`,
-  EventBridge results at-least-once, TBAC deny-unless-clean).
+  EventBridge results at-least-once, TBAC deny-unless-clean; monitoring:
+  <https://docs.aws.amazon.com/guardduty/latest/ug/monitor-with-eventbridge-s3-malware-protection.html>).
+  GuardDuty scan results carry NO engine/signature version — evidence must use
+  the provider-aware contract (plan ID, object versionId/eTag, event identity),
+  never a fabricated version.
 - Database/queue: RDS PostgreSQL + ElastiCache Redis in me-south-1 (both are
   core AWS services available in-region; verify instance classes at decision).
-- Residency: closest hyperscaler region to Amman (~30–40 ms reported); still
-  cross-border (Bahrain ≠ Jordan) — counsel must rule on PDPL basis.
+- Residency: closest hyperscaler region to Amman (reported Gulf-region
+  round-trips of tens of ms are UNMEASURED anecdotes until tested from our own
+  topology); still cross-border (Bahrain ≠ Jordan) — counsel must rule on PDPL
+  basis.
 - Cost posture: highest of the three (managed services + per-GB scan billing);
   verify current S3/GuardDuty pricing at decision time.
 - Trade-offs: smallest ops burden, strongest verdict machinery, highest cost,
@@ -31,8 +37,13 @@
 ### Stack C — S3-compatible independent store + self-hosted scanning
 - Object storage: Backblaze B2 (regions: US West/East, EU Central Amsterdam,
   CA East — NO Middle East; $6.95/TB/mo verified Oct 2026; account region
-  immutable) or Wasabi (16 regions NA/EMEA/APAC; verify ME presence at decision;
-  90-day minimum retention on pay-as-you-go CONFLICTS with undecided DEC-02).
+  immutable; pricing: <https://www.backblaze.com/cloud-storage/pricing>) or
+  Wasabi (16 regions NA/EMEA/APAC; verify ME presence at decision; 90-day
+  minimum on pay-as-you-go is an early-deletion *billing charge*, not a
+  technical deletion block — an unresolved cost/policy compatibility risk
+  while DEC-02 is open, and other Wasabi plans may differ; terms:
+  <https://wasabi.com/product-terms>,
+  <https://docs.wasabi.com/docs/how-does-wasabis-minimum-storage-duration-policy-work>).
 - Scanning: self-hosted ClamAV (`clamd` + `freshclam` CVD updates; version
   freshness SLO owned by us) or evaluated SaaS (extra subprocessor + DPA).
 - Database/queue: managed Postgres/Redis from an approved host, or self-managed
@@ -43,8 +54,9 @@
 ### Notably NOT viable as drawn
 - Cloudflare R2 with ME data-residency guarantee: jurisdictions offered are
   default/eu/us/fedramp(-high) only; location hints are best-effort, not a
-  guarantee (verified Oct 2026). Revisit only if their jurisdiction list gains
-  a suitable option.
+  guarantee (verified Oct 2026; locations:
+  <https://developers.cloudflare.com/r2/reference/data-location/>). Revisit
+  only if their jurisdiction list gains a suitable option.
 - Supabase Cloud pinned primary region in the Middle East: no ME-specific
   region offered (verify at decision; third-party UAE-hosted Supabase resellers
   are unevaluated and NOT recommended here).
@@ -57,7 +69,7 @@
 |---|---|---|---|---|
 | DEC-03 | Hosting region + transfer basis (ADR-001 Q1–Q8) | A Bahrain / B EU / C independent (above) | BLOCKED | PO + Tech Lead + Legal |
 | DEC-S1 | Object-storage provider, bucket, key rotation, prod IAM owner | A/B/C per above | BLOCKED | PO + Tech Lead |
-| DEC-S2 | Malware scanner + engine version + verdict trust + fallback | GuardDuty managed / ClamAV self-hosted / evaluated SaaS | BLOCKED | PO + Security |
+| DEC-S2 | Malware scanner + provider-aware verdict evidence + fallback (engine version only where supplied, else `not exposed by vendor`) | GuardDuty managed / ClamAV self-hosted / evaluated SaaS | BLOCKED | PO + Security |
 | DEC-02 | Retention/deletion/backup/hold periods + legal authority | Periods TBD by PO/legal; mechanics in C5 | BLOCKED (open) | PO + Legal |
 | DEC-J1 | Job durability source of truth + SLO + ops owner | PG-authoritative + Redis wakeups (PROPOSED) | BLOCKED | PO + Tech Lead |
 | DEC-R1 | Pre-prod security review, env credentials, pilot onboarding gate | Checklist in execution plan §6 | BLOCKED | PO + Security |

@@ -77,16 +77,24 @@ Detection + verification owner for every row above: backend integration tests (t
 
 Intake rows stay append-only under migration 0005 (only `QUARANTINED → REJECTED`
 is permitted in place; `REJECTED` is terminal; `DELETE` is refused). Scan and
-release state therefore lives in **new append-only records**, never as a
-mutable `CLEAN` flag on the intake:
+release state therefore lives in **new append-only records** (canonical
+numbering, proposed only — recheck numbering and main HEAD at each PR kickoff
+so no two workers ever create competing migrations: **0006 = EP-04C1 durable
+jobs/outbox; 0007 = EP-04C4 scan verdicts/release authorizations; neither file
+exists until its PR is approved**), never as a mutable `CLEAN` flag on the intake:
 
 ```
 document_intakes.status = QUARANTINED          (frozen; EP-04B, migration 0005)
-  └─▶ scan_verdicts (append-only, migration 0006 PROPOSED):
-      intake_id + content_sha256 + scanner_id + engine_version + verdict
-      {CLEAN, INFECTED, UNSUPPORTED, SCAN_FAILED, EXPIRED} + scanned_at + policy_version
-     CHECK: verdict row is worthless unless content_sha256 == intake content_sha256.
-  └─▶ release_authorizations (append-only, migration 0006 PROPOSED):
+  └─▶ scan_verdicts (append-only, migration 0007 PROPOSED):
+      intake_id + content_sha256 + object version (provider versionId) +
+      provider evidence contract (§4.1: identity, trusted origin, status/result,
+      plan/policy version, event identity, replay fence; engine/signature
+      version recorded ONLY when the provider supplies it, else
+      `not exposed by vendor` — never fabricated) + scanned_at + policy TTL
+     CHECK: verdict row is worthless unless content_sha256 AND the exact object
+     version match the stored object; self-reported tags or raw event JSON alone
+     never authorize release (independent control-plane verification required).
+  └─▶ release_authorizations (append-only, migration 0007 PROPOSED):
       intake_id + verdict_id + authorizer (policy, not a person) + scope
       (extract-only) + expires_at. Workers require a live, unexpired release
       whose verdict hash matches the object hash before ANY read.
@@ -97,6 +105,32 @@ mismatch between object, verdict, and release fails closed; re-scan is required
 on scanner-version or policy change (old verdicts expire); extraction reads
 only via short-lived, tenant-scoped, single-object grants issued after release
 verification — never via opaque internal keys and never presigned quarantine URLs.
+
+### 4.1 Provider-aware scan-evidence contract (no fabricated versions)
+
+GuardDuty Malware Protection for S3 does NOT publish a scanner engine or
+signature version: its EventBridge result carries AWS account/region/resource,
+scan status/result, and the S3 object bucket/key/`versionId`/`eTag`. The
+evidence contract is therefore provider-aware, not engine-uniform:
+
+- Required for every verdict row: provider identity (GuardDuty plan ID /
+  ClamAV deployment + config hash); trusted origin (EventBridge consumed via
+  SigV4-authenticated SQS poll or control-plane status read — never raw
+  unauthenticated webhook JSON; self-reported object tags alone insufficient,
+  independently re-read via control plane before release); exact object version
+  (`versionId` + server-computed SHA-256 of the bytes we stored); scan
+  status/result verbatim (`NO_THREATS_FOUND / THREATS_FOUND / UNSUPPORTED /
+  ACCESS_DENIED / FAILED` or ClamAV equivalent); plan/policy version; EventBridge
+  event ID + timestamp; replay fence (event IDs deduplicated; same verdict
+  twice = single effect).
+- Engine/signature version: recorded when the provider supplies it (ClamAV CVD
+  versions); for managed scanners that do not expose it, store literally
+  `not exposed by vendor` — never invented. Re-scan triggers: policy/version
+  change + conservative verdict TTL, not a fictitious engine-version diff.
+- Negative acceptance (EP-04C4 must prove): forged event (unknown source /
+  bad transport auth) refused; replayed verdict (same event ID) single-effect;
+  swapped object version (verdict for v1 presented against v2 bytes) refused;
+  `UNSUPPORTED`/`ACCESS_DENIED`/`FAILED`/timeout verdicts never release.
 
 ## 5. Storage architecture (PROPOSED)
 

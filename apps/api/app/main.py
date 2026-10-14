@@ -16,6 +16,7 @@ from .logging_setup import setup_logging
 from .middleware import BodyLimitMiddleware, CorrelationIdMiddleware
 from .routers.auth import router as auth_router
 from .routers.health import router as health_router
+from .routers.intakes import router as intakes_router
 from .routers.workspace import router as workspace_router
 
 log = logging.getLogger(__name__)
@@ -57,6 +58,7 @@ def create_app() -> FastAPI:
     app.include_router(health_router, prefix=settings.api_v1_prefix)
     app.include_router(auth_router, prefix=settings.api_v1_prefix)
     app.include_router(workspace_router, prefix=settings.api_v1_prefix)
+    app.include_router(intakes_router, prefix=settings.api_v1_prefix)
 
     @app.get("/health", include_in_schema=False)
     def _root_health() -> dict[str, str]:

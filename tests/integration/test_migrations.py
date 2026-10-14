@@ -73,6 +73,7 @@ def test_migration_discovery_exact_and_ordered():
         "0002_auth_tenancy_clients.sql",
         "0003_session_csrf.sql",
         "0004_jurisdiction_foundation.sql",
+        "0005_document_intakes.sql",
     ]
 
 
@@ -94,7 +95,7 @@ def test_first_migration_applies_and_rerun_is_noop():
     url = _destructive_or_skip()
     with psycopg.connect(_to_libpq(url), connect_timeout=5) as conn:
         conn.execute("DROP TABLE IF EXISTS schema_migrations")
-    assert migrate(url) == ["0001", "0002", "0003", "0004"]
+    assert migrate(url) == ["0001", "0002", "0003", "0004", "0005"]
     assert migrate(url) == []
 
 

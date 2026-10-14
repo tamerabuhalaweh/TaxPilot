@@ -128,6 +128,30 @@ audit = Table(
     Column("created_at", DateTime(timezone=True), nullable=False),
 )
 
+# -- EP-04B client-intake quarantine metadata (migration 0005) --
+document_intakes = Table(
+    "document_intakes",
+    metadata,
+    Column("id", UUID(as_uuid=True), primary_key=True),
+    Column("tenant_id", UUID(as_uuid=True), nullable=False),
+    Column("client_id", UUID(as_uuid=True), nullable=False),
+    Column("idempotency_key", Text, nullable=False),
+    Column("version", Integer, nullable=False),
+    Column("parent_id", UUID(as_uuid=True)),
+    Column("duplicate_of", UUID(as_uuid=True)),
+    Column("storage_key", Text, nullable=False),
+    Column("content_sha256", Text, nullable=False),
+    Column("byte_count", Integer, nullable=False),
+    Column("filename", Text, nullable=False),
+    Column("declared_type", Text, nullable=False),
+    Column("content_type", Text),
+    Column("status", Text, nullable=False),
+    Column("reason", Text),
+    Column("uploaded_by", UUID(as_uuid=True)),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+)
+
 # -- JUR-01 Phase 1 jurisdiction tables (migration 0004; no presences/groups) --
 jurisdictions = Table(
     "jurisdiction_catalog",
@@ -231,6 +255,7 @@ TABLES: dict[str, Table] = {
     "email_verifications": verifications,
     "clients": clients,
     "audit_events": audit,
+    "document_intakes": document_intakes,
     "jurisdiction_catalog": jurisdictions,
     "legal_entities": legal_entities,
     "tax_obligation_profiles": obligations,
@@ -720,6 +745,116 @@ class Store:
             .all()
         )
         return [_row(r) for r in rows]
+
+    # -- document intakes (EP-04B quarantine metadata) ---------------------------
+    def lock_intake_key(self, tenant_id: str, client_id: str, key: str) -> None:
+        """Serialize concurrent uploads sharing one idempotency key.
+
+        Transaction-scoped advisory lock over (tenant, client, key): concurrent
+        same-key uploads queue here, so version assignment below never doubles.
+        """
+        self.conn.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext(:k))"),
+            {"k": f"intake:{tenant_id}:{client_id}:{key}"},
+        )
+
+    def get_intakes_by_key(
+        self, tenant_id: str, client_id: str, key: str, for_update: bool = False
+    ) -> list[dict]:
+        query = (
+            select(self.t["document_intakes"])
+            .where(self.t["document_intakes"].c.tenant_id == tenant_id)
+            .where(self.t["document_intakes"].c.client_id == client_id)
+            .where(self.t["document_intakes"].c.idempotency_key == key)
+            .order_by(self.t["document_intakes"].c.version)
+        )
+        if for_update:
+            query = query.with_for_update()
+        return [_row(r) for r in self.conn.execute(query).mappings().all()]
+
+    def find_intakes_by_sha(self, tenant_id: str, client_id: str, sha: str) -> list[dict]:
+        rows = (
+            self.conn.execute(
+                select(self.t["document_intakes"])
+                .where(self.t["document_intakes"].c.tenant_id == tenant_id)
+                .where(self.t["document_intakes"].c.client_id == client_id)
+                .where(self.t["document_intakes"].c.content_sha256 == sha)
+                .order_by(self.t["document_intakes"].c.created_at)
+                .limit(5)
+            )
+            .mappings()
+            .all()
+        )
+        return [_row(r) for r in rows]
+
+    def get_intake(self, intake_id: str, tenant_id: str) -> dict | None:
+        row = (
+            self.conn.execute(
+                select(self.t["document_intakes"])
+                .where(self.t["document_intakes"].c.id == intake_id)
+                .where(self.t["document_intakes"].c.tenant_id == tenant_id)
+            )
+            .mappings()
+            .first()
+        )
+        return _row(row) if row else None
+
+    def list_intakes(self, client_id: str, tenant_id: str, limit: int = 100) -> list[dict]:
+        rows = (
+            self.conn.execute(
+                select(self.t["document_intakes"])
+                .where(self.t["document_intakes"].c.client_id == client_id)
+                .where(self.t["document_intakes"].c.tenant_id == tenant_id)
+                .order_by(self.t["document_intakes"].c.created_at.desc())
+                .limit(limit)
+            )
+            .mappings()
+            .all()
+        )
+        return [_row(r) for r in rows]
+
+    def create_intake(
+        self,
+        tenant_id: str,
+        client_id: str,
+        key: str,
+        version: int,
+        parent_id: str | None,
+        duplicate_of: str | None,
+        storage_key: str,
+        sha: str,
+        byte_count: int,
+        filename: str,
+        declared_type: str,
+        content_type: str | None,
+        uploaded_by: str,
+    ) -> dict:
+        row = (
+            self.conn.execute(
+                insert(self.t["document_intakes"])
+                .values(
+                    id=uuid.uuid4(),
+                    tenant_id=tenant_id,
+                    client_id=client_id,
+                    idempotency_key=key,
+                    version=version,
+                    parent_id=parent_id,
+                    duplicate_of=duplicate_of,
+                    storage_key=storage_key,
+                    content_sha256=sha,
+                    byte_count=byte_count,
+                    filename=filename,
+                    declared_type=declared_type,
+                    content_type=content_type,
+                    status="QUARANTINED",
+                    uploaded_by=uploaded_by,
+                )
+                .returning(self.t["document_intakes"])
+            )
+            .mappings()
+            .first()
+        )
+        return _row(row)
 
 
 def session_expiry(hours: int = 24) -> datetime:

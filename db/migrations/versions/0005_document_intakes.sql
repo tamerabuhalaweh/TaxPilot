@@ -50,14 +50,18 @@ CREATE INDEX IF NOT EXISTS document_intakes_client_idx
 CREATE INDEX IF NOT EXISTS document_intakes_sha_idx
   ON document_intakes (tenant_id, client_id, content_sha256);
 
--- R1 immutability: accepted intake metadata cannot be rewritten. Only the
--- future scan gate may move status QUARANTINED -> REJECTED (with a reason);
--- REJECTED is terminal. Everything else (ids, keys, hashes, bytes, names,
--- lineage links, actor, timestamps) is frozen at insert. updated_at tracks
--- authorized status transitions only.
+-- R1 immutability: accepted intake metadata cannot be rewritten, and rows are
+-- never deleted (no HTTP delete exists; retention DEC-02 is open; any future
+-- controlled erasure requires its own reviewed migration). The ONLY authorized
+-- update is exactly QUARANTINED -> REJECTED with a nonblank reason supplied
+-- atomically (the future scan gate's verdict); after REJECTED even the reason
+-- is frozen. No Q->Q or R->R rewrites, no reverts, no other statuses.
 CREATE OR REPLACE FUNCTION document_intakes_immutable_guard()
 RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'document_intakes rows are never deleted (retention policy undecided)';
+  END IF;
   IF NEW.id IS DISTINCT FROM OLD.id
     OR NEW.tenant_id IS DISTINCT FROM OLD.tenant_id
     OR NEW.client_id IS DISTINCT FROM OLD.client_id
@@ -75,16 +79,21 @@ BEGIN
     OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
     RAISE EXCEPTION 'document_intakes accepted metadata is immutable';
   END IF;
-  IF NOT ((OLD.status = 'QUARANTINED' AND NEW.status IN ('QUARANTINED', 'REJECTED'))
-      OR (OLD.status = 'REJECTED' AND NEW.status = 'REJECTED')) THEN
-    RAISE EXCEPTION 'document_intakes status transition % -> % is not authorized',
-      OLD.status, NEW.status;
+  IF OLD.status = 'QUARANTINED' AND NEW.status = 'REJECTED'
+    AND NEW.reason IS NOT NULL AND btrim(NEW.reason) <> '' THEN
+    NEW.updated_at := now();
+    RETURN NEW;
   END IF;
-  NEW.updated_at := now();
-  RETURN NEW;
+  RAISE EXCEPTION 'only QUARANTINED -> REJECTED with a nonblank reason is authorized (got % -> %)',
+    OLD.status, NEW.status;
 END $$;
 
 DROP TRIGGER IF EXISTS document_intakes_no_mutation ON document_intakes;
 CREATE TRIGGER document_intakes_no_mutation
   BEFORE UPDATE ON document_intakes
+  FOR EACH ROW EXECUTE FUNCTION document_intakes_immutable_guard();
+
+DROP TRIGGER IF EXISTS document_intakes_no_delete ON document_intakes;
+CREATE TRIGGER document_intakes_no_delete
+  BEFORE DELETE ON document_intakes
   FOR EACH ROW EXECUTE FUNCTION document_intakes_immutable_guard();

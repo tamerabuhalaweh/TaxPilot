@@ -722,11 +722,27 @@ def test_accepted_metadata_immutable_at_database_layer():  # type: ignore[no-unt
 
 
 def test_authorized_status_transition_policy():  # type: ignore[no-untyped-def]
-    """Future scan gate may move QUARANTINED -> REJECTED (terminal); all else refused."""
+    """Exactly one authorized update exists: QUARANTINED -> REJECTED with a
+    nonblank reason. After REJECTED even the reason is frozen; reverts fail."""
     t1, c1 = _pg_scope("trans")
     row_id = _pg_intake(t1, c1, "k-trans", "t" * 43)
     url = _scratch_or_skip()
     with psycopg.connect(_to_libpq(url), connect_timeout=5) as conn:
+        # Reason rewrite without the authorized transition is refused.
+        with pytest.raises(Exception, match="(?i)(only QUARANTINED|immutable)"):
+            conn.execute(
+                "UPDATE document_intakes SET reason = 'fabricated rationale' WHERE id = %s",
+                (row_id,),
+            )
+        conn.rollback()
+        # Blank/null reasons cannot carry the transition either.
+        for blank in (None, "", "   "):
+            with pytest.raises(Exception, match="(?i)(only QUARANTINED|immutable)"):
+                conn.execute(
+                    "UPDATE document_intakes SET status = 'REJECTED', reason = %s WHERE id = %s",
+                    (blank, row_id),
+                )
+            conn.rollback()
         conn.execute(
             "UPDATE document_intakes SET status = 'REJECTED', reason = 'synthetic scan verdict' "
             "WHERE id = %s",
@@ -737,12 +753,42 @@ def test_authorized_status_transition_policy():  # type: ignore[no-untyped-def]
             "SELECT status, reason FROM document_intakes WHERE id = %s", (row_id,)
         ).fetchone()
         assert status[0] == "REJECTED" and "synthetic" in status[1]
-        with pytest.raises(Exception, match="(?i)(not authorized|immutable)"):
+        # Rejected rows are fully frozen, including their reason.
+        with pytest.raises(Exception, match="(?i)(only QUARANTINED|immutable)"):
+            conn.execute(
+                "UPDATE document_intakes SET reason = 'rewritten verdict' WHERE id = %s",
+                (row_id,),
+            )
+        conn.rollback()
+        with pytest.raises(Exception, match="(?i)(only QUARANTINED|immutable)"):
             conn.execute(
                 "UPDATE document_intakes SET status = 'QUARANTINED' WHERE id = %s",
                 (row_id,),
             )
         conn.rollback()
+        with pytest.raises(Exception, match="(?i)(only QUARANTINED|immutable)"):
+            conn.execute(
+                "UPDATE document_intakes SET status = 'CLEAN' WHERE id = %s", (row_id,)
+            )
+        conn.rollback()
+
+
+def test_delete_refused_without_retention_policy():  # type: ignore[no-untyped-def]
+    """No HTTP delete exists and DEC-02 retention is open: rows cannot be
+    deleted at all. Future controlled erasure needs its own reviewed migration."""
+    t1, c1 = _pg_scope("nodel")
+    row_id = _pg_intake(t1, c1, "k-nodel", "t" * 43)
+    url = _scratch_or_skip()
+    with psycopg.connect(_to_libpq(url), connect_timeout=5) as conn:
+        with pytest.raises(Exception, match="(?i)never deleted"):
+            conn.execute("DELETE FROM document_intakes WHERE id = %s", (row_id,))
+        conn.rollback()
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM document_intakes WHERE id = %s", (row_id,)
+            ).fetchone()[0]
+            == 1
+        )
         with pytest.raises(Exception, match="(?i)(not authorized|immutable)"):
             conn.execute(
                 "UPDATE document_intakes SET status = 'CLEAN' WHERE id = %s", (row_id,)

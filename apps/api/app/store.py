@@ -152,6 +152,52 @@ document_intakes = Table(
     Column("updated_at", DateTime(timezone=True), nullable=False),
 )
 
+# -- EP-04C1 durable processing jobs + transactional outbox (migration 0006) --
+extraction_jobs = Table(
+    "extraction_jobs",
+    metadata,
+    Column("id", UUID(as_uuid=True), primary_key=True),
+    Column("tenant_id", UUID(as_uuid=True), nullable=False),
+    Column("client_id", UUID(as_uuid=True), nullable=False),
+    Column("operation", Text, nullable=False),
+    Column("idempotency_key", Text, nullable=False),
+    Column("payload_hash", Text, nullable=False),
+    Column("payload", JSONB, nullable=False),
+    Column("status", Text, nullable=False),
+    Column("attempts", Integer, nullable=False),
+    Column("max_attempts", Integer, nullable=False),
+    Column("lease_owner", Text, nullable=False),
+    Column("fencing_token", Text, nullable=False),
+    Column("lease_expires_at", DateTime(timezone=True)),
+    Column("not_before", DateTime(timezone=True), nullable=False),
+    Column("last_error", Text),
+    Column("last_error_class", Text),
+    Column("terminal_error", Text),
+    Column("terminal_error_class", Text),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+)
+
+job_outbox = Table(
+    "job_outbox",
+    metadata,
+    Column("id", UUID(as_uuid=True), primary_key=True),
+    Column("tenant_id", UUID(as_uuid=True), nullable=False),
+    Column("job_id", UUID(as_uuid=True), nullable=False),
+    Column("event_key", Text, nullable=False),
+    Column("event_type", Text, nullable=False),
+    Column("payload", JSONB, nullable=False),
+    Column("status", Text, nullable=False),
+    Column("attempts", Integer, nullable=False),
+    Column("max_attempts", Integer, nullable=False),
+    Column("lease_owner", Text, nullable=False),
+    Column("fencing_token", Text, nullable=False),
+    Column("lease_expires_at", DateTime(timezone=True)),
+    Column("next_attempt_at", DateTime(timezone=True), nullable=False),
+    Column("published_at", DateTime(timezone=True)),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+)
+
 # -- JUR-01 Phase 1 jurisdiction tables (migration 0004; no presences/groups) --
 jurisdictions = Table(
     "jurisdiction_catalog",
@@ -256,6 +302,8 @@ TABLES: dict[str, Table] = {
     "clients": clients,
     "audit_events": audit,
     "document_intakes": document_intakes,
+    "extraction_jobs": extraction_jobs,
+    "job_outbox": job_outbox,
     "jurisdiction_catalog": jurisdictions,
     "legal_entities": legal_entities,
     "tax_obligation_profiles": obligations,

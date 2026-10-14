@@ -1,0 +1,1065 @@
+"""EP-04C1 integration: PG-authoritative durable jobs, real PG 16 + Redis 7.
+
+All fault tests run against the DEDICATED DISPOSABLE database (dbsafety-guard,
+never DATABASE_URL) with synthetic tenants/payloads and no-op handlers. No
+quarantined bytes, scans, extraction, or financial effects anywhere here.
+"""
+
+import os
+import sys
+import threading
+import time
+import uuid
+
+import pytest
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))  # repo root
+sys.path.insert(0, os.path.dirname(__file__))  # sibling dbsafety module
+
+import dbsafety  # noqa: E402
+
+psycopg = pytest.importorskip("psycopg")
+
+from app.jobs import (  # noqa: E402
+    JobConflictError,
+    RetryableError,
+    WakeupBus,
+    serve,
+    session,
+)
+from app.store import assert_schema_matches, tables  # noqa: E402
+from db.migrate import _to_libpq, discover, load_checksums, migrate  # noqa: E402
+
+REQUIRE_SERVICES = os.environ.get("REQUIRE_SERVICES") == "1"
+# Isolated logical database for wakeup tests: FLUSHDB here never touches the
+# shared dev db 0. CI Linux resolves localhost fine; Windows dev may export
+# TAXPILOT_TEST_REDIS_URL with 127.0.0.1 instead (documented IPv6 quirk).
+REDIS_TEST_URL = os.environ.get("TAXPILOT_TEST_REDIS_URL", "redis://localhost:6379/15")
+URL = os.environ.get(
+    "DATABASE_URL", "postgresql+psycopg://taxpilot:taxpilot@localhost:5432/taxpilot"
+)
+
+_DURL: str | None = None
+_ENGINE = None
+
+
+def _db_or_skip() -> str:
+    if not URL:
+        if REQUIRE_SERVICES:
+            pytest.fail("DATABASE_URL is required when REQUIRE_SERVICES=1")
+        pytest.skip("DATABASE_URL not set (documented optional local mode)")
+    try:
+        with psycopg.connect(_to_libpq(URL), connect_timeout=5) as conn:
+            conn.execute("SELECT 1")
+    except Exception as exc:
+        if REQUIRE_SERVICES:
+            pytest.fail(f"postgres unreachable with REQUIRE_SERVICES=1: {exc}")
+        pytest.skip(f"postgres unreachable (documented optional local mode): {exc}")
+    return URL
+
+
+def _destructive_or_skip() -> str:
+    _db_or_skip()
+    global _DURL
+    if _DURL is None:
+        candidate = dbsafety.destructive_url()
+        try:
+            dbsafety.require_destructive_db(candidate)
+        except ValueError as exc:
+            if REQUIRE_SERVICES:
+                pytest.fail(f"destructive-test safeguard refused target: {exc}")
+            pytest.skip(f"destructive-test safeguard refused target: {exc}")
+        migrate(candidate)
+        _DURL = candidate
+    else:
+        migrate(_DURL)
+    return _DURL
+
+
+def _engine():
+    global _ENGINE
+    if _ENGINE is None:
+        from sqlalchemy import create_engine
+
+        # Keep the postgresql+psycopg:// scheme: SQLAlchemy then selects the
+        # psycopg3 dialect. Converting to libpq form would select psycopg2.
+        _ENGINE = create_engine(_destructive_or_skip())
+    return _ENGINE
+
+
+def _factory():
+    return session(_engine(), tables())
+
+
+def _scope(tag: str) -> tuple[str, str]:
+    tenant_id, client_id = str(uuid.uuid4()), str(uuid.uuid4())
+    with psycopg.connect(_to_libpq(_destructive_or_skip()), connect_timeout=5) as conn:
+        conn.execute(
+            "INSERT INTO tenants (id, name) VALUES (%s, %s)", (tenant_id, f"j-{tag}")
+        )
+        conn.execute(
+            "INSERT INTO clients (id, tenant_id, name) VALUES (%s, %s, %s)",
+            (client_id, tenant_id, f"c-{tag}"),
+        )
+        conn.commit()
+    return tenant_id, client_id
+
+
+def _key(tag: str) -> str:
+    return f"ep04c1-{tag}-{uuid.uuid4().hex[:8]}"
+
+
+def _enqueue(
+    tenant: str, client: str, key: str, payload: dict | None = None, **kw
+) -> dict:
+    with _factory() as dao:
+        row = dao.enqueue(
+            tenant, client, "synthetic.noop", key, payload or {"n": key}, **kw
+        )
+        dao.commit()
+        return row
+
+
+def _effect_table(name: str) -> None:
+    with psycopg.connect(_to_libpq(_destructive_or_skip()), connect_timeout=5) as conn:
+        conn.execute(
+            f"CREATE TABLE IF NOT EXISTS {name} (job_id TEXT PRIMARY KEY, runs INTEGER NOT NULL DEFAULT 0)"
+        )
+        conn.execute(f"DELETE FROM {name}")
+        conn.commit()
+
+
+def _effect_runs(name: str) -> dict[str, int]:
+    with psycopg.connect(_to_libpq(_destructive_or_skip()), connect_timeout=5) as conn:
+        rows = conn.execute(f"SELECT job_id, runs FROM {name}").fetchall()
+    return {r[0]: r[1] for r in rows}
+
+
+# -- migration ------------------------------------------------------------------
+def test_fresh_install_applies_0001_to_0006_with_checksums():
+    url = _destructive_or_skip()
+    with psycopg.connect(_to_libpq(url), connect_timeout=10) as conn:
+        conn.execute("DROP SCHEMA public CASCADE")
+        conn.execute("CREATE SCHEMA public")
+        conn.commit()
+    try:
+        assert migrate(url) == ["0001", "0002", "0003", "0004", "0005", "0006"]
+        assert [p.name for p in discover()][-1] == "0006_extraction_jobs.sql"
+        manifest = load_checksums()
+        recorded = {
+            r[0]: r[1]
+            for r in psycopg.connect(_to_libpq(url), connect_timeout=5)
+            .execute("SELECT version, sha256 FROM schema_migrations")
+            .fetchall()
+        }
+        assert set(recorded) == {"0001", "0002", "0003", "0004", "0005", "0006"}
+        for version, digest in recorded.items():
+            assert manifest[version] == digest, version
+        from sqlalchemy import create_engine
+
+        engine = create_engine(url)
+        try:
+            assert_schema_matches(engine)
+        finally:
+            engine.dispose()
+    finally:
+        migrate(url)
+
+
+# -- idempotency ------------------------------------------------------------------
+def test_enqueue_idempotent_conflict_and_cross_tenant_independence():
+    tenant_a, client_a = _scope("idem-a")
+    tenant_b, client_b = _scope("idem-b")
+    key = _key("same")
+    first = _enqueue(tenant_a, client_a, key, {"v": 1})
+    again = _enqueue(tenant_a, client_a, key, {"v": 1})
+    assert again["id"] == first["id"]  # same logical job
+    with pytest.raises(JobConflictError):
+        _enqueue(tenant_a, client_a, key, {"v": 2})  # same key, different payload
+    other_tenant = _enqueue(tenant_b, client_b, key, {"v": 1})
+    assert other_tenant["id"] != first["id"]  # no cross-tenant coupling
+
+
+# -- happy path ------------------------------------------------------------------
+def test_claim_heartbeat_settle_happy_path():
+    tenant, client = _scope("happy")
+    _enqueue(tenant, client, _key("happy"))
+    seen: list = []
+
+    def handler(job: dict) -> None:
+        seen.append(job["id"])
+        assert job["tenant_id"] == tenant
+
+    stats = serve(
+        _factory,
+        handler,
+        tenant_id=tenant,
+        lease_ttl=30.0,
+        stop_after_jobs=1,
+        idle_timeout=10.0,
+    )
+    assert stats["completed"] == 1 and seen
+    with _factory() as dao:
+        row = dao.get(seen[0], tenant)
+        assert row is not None and row["status"] == "SUCCEEDED" and row["attempts"] == 1
+        assert dao.get(seen[0], "00000000-0000-0000-0000-000000000000") is None
+
+
+# -- crash + recovery --------------------------------------------------------------
+def _abandon_claim(
+    tenant: str, client: str, key: str, lease_ttl: float = 600.0
+) -> dict:
+    _enqueue(tenant, client, key)
+    with _factory() as dao:
+        claimed = dao.claim(tenant, "worker-crasher", lease_ttl)
+        assert claimed is not None
+        dao.commit()
+    return claimed  # never settled: simulates SIGKILL mid-run (lease held, then lapses)
+
+
+def _force_expire(job_id: str) -> None:
+    with psycopg.connect(_to_libpq(_destructive_or_skip()), connect_timeout=5) as conn:
+        conn.execute(
+            "UPDATE extraction_jobs SET lease_expires_at = clock_timestamp() - make_interval(secs => 5) "
+            "WHERE id = %s",
+            (job_id,),
+        )
+        conn.commit()
+
+
+def test_crash_recovery_redelivers_and_completes():
+    tenant, client = _scope("crash")
+    abandoned = _abandon_claim(tenant, client, _key("crash"), lease_ttl=3600.0)
+    _force_expire(abandoned["id"])
+    with _factory() as dao:
+        moved = dao.recover_stale(tenant)
+        dao.commit()
+    assert [(m["id"], m["status"]) for m in moved] == [(abandoned["id"], "QUEUED")]
+    done: list = []
+    stats = serve(
+        _factory,
+        lambda job: done.append(job["id"]),
+        tenant_id=tenant,
+        lease_ttl=30.0,
+        stop_after_jobs=1,
+        idle_timeout=10.0,
+    )
+    assert stats["completed"] == 1 and done == [abandoned["id"]]
+    with _factory() as dao:
+        assert dao.get(abandoned["id"], tenant)["attempts"] == 2
+
+
+def test_heartbeat_prevents_theft_during_slow_work():
+    tenant, client = _scope("slow")
+    row = _enqueue(tenant, client, _key("slow"))
+    finished: list = []
+
+    def slow_handler(job: dict) -> None:
+        time.sleep(4)  # longer than the 2s lease: only heartbeats keep ownership
+        finished.append(job["id"])
+
+    stats = serve(
+        _factory,
+        slow_handler,
+        tenant_id=tenant,
+        lease_ttl=2.0,
+        stop_after_jobs=1,
+        idle_timeout=30.0,
+    )
+    assert stats["completed"] == 1 and finished == [row["id"]]
+    with _factory() as dao:
+        assert dao.recover_stale(tenant) == []  # nothing leaked as stale
+
+
+def test_expired_lease_invalidates_settlement_before_sweeper():
+    tenant, client = _scope("expiry")
+    claimed = _abandon_claim(tenant, client, _key("expiry"), lease_ttl=1.0)
+    time.sleep(1.5)
+    with _factory() as dao:
+        assert (
+            dao.renew(claimed["id"], "worker-crasher", claimed["fencing_token"], 60.0)
+            is False
+        )
+        assert (
+            dao.finish(claimed["id"], "worker-crasher", claimed["fencing_token"], True)
+            is False
+        )
+        assert (
+            dao.get(claimed["id"], tenant)["status"] == "RUNNING"
+        )  # sweeper hasn't run
+        dao.commit()
+
+
+def test_stale_token_rejected_after_reclaim():
+    tenant, client = _scope("stale")
+    first = _abandon_claim(tenant, client, _key("stale"), lease_ttl=1.0)
+    time.sleep(1.5)
+    with _factory() as dao:
+        assert dao.recover_stale(tenant)
+        dao.commit()
+    with _factory() as dao:
+        second = dao.claim(tenant, "worker-b", 60.0)
+        dao.commit()
+    assert second is not None and second["fencing_token"] != first["fencing_token"]
+    with _factory() as dao:
+        assert (
+            dao.finish(first["id"], "worker-crasher", first["fencing_token"], True)
+            is False
+        )
+        dao.commit()
+
+
+def test_two_workers_single_claim():
+    tenant, client = _scope("race")
+    _enqueue(tenant, client, _key("race"))
+    barrier = threading.Barrier(8)
+    wins: list = []
+
+    def attempt() -> None:
+        barrier.wait(timeout=10)
+        with _factory() as dao:
+            claimed = dao.claim(tenant, "worker-x", 60.0)
+            dao.commit()
+            if claimed is not None:
+                wins.append(claimed["id"])
+
+    threads = [threading.Thread(target=attempt) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=60)
+    assert len(wins) == 1
+
+
+def test_two_sweepers_single_recovery():
+    tenant, client = _scope("sweep")
+    ids = []
+    for i in range(3):
+        claimed = _abandon_claim(tenant, client, _key(f"sweep-{i}"), lease_ttl=1.0)
+        ids.append(claimed["id"])
+    time.sleep(1.5)
+    barrier = threading.Barrier(2)
+    recovered: list = []
+
+    def sweep() -> None:
+        barrier.wait(timeout=10)
+        with _factory() as dao:
+            recovered.extend(dao.recover_stale(tenant))
+            dao.commit()
+
+    threads = [threading.Thread(target=sweep) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=60)
+    assert sorted(m["id"] for m in recovered) == sorted(ids)  # each exactly once
+
+
+def test_max_attempts_dead_letter_is_terminal():
+    tenant, client = _scope("dead")
+    row = _enqueue(tenant, client, _key("dead"), max_attempts=2)
+    for _ in range(2):  # two crashes consume both attempts
+        with _factory() as dao:
+            claimed = dao.claim(tenant, "worker-c", 3600.0)
+            assert claimed is not None
+            dao.commit()
+        _force_expire(row["id"])
+        with _factory() as dao:
+            dao.recover_stale(tenant)
+            dao.commit()
+    # Second recovery already exhausted attempts=2 >= max=2: DEAD, and a
+    # further sweep finds nothing eligible.
+    with _factory() as dao:
+        assert dao.recover_stale(tenant) == []
+        final = dao.get(row["id"], tenant)
+        dao.commit()
+    assert (
+        final["status"] == "DEAD"
+        and final["terminal_error_class"] == "MaxAttemptsExhausted"
+    )
+    with _factory() as dao:  # DEAD jobs are never served again
+        assert dao.claim(tenant, "worker-d", 60.0) is None
+        dao.commit()
+
+
+def test_repeated_failures_reach_dead_and_stop_being_claimed():
+    tenant, client = _scope("exhaust")
+    row = _enqueue(tenant, client, _key("exh"), max_attempts=3)
+
+    def always_retry(job: dict) -> None:
+        raise RetryableError("boom")
+
+    stats = serve(
+        _factory,
+        always_retry,
+        tenant_id=tenant,
+        lease_ttl=30.0,
+        idle_timeout=5.0,
+        deadline_seconds=60.0,
+        sweep_interval=60.0,
+    )
+    with _factory() as dao:
+        final = dao.get(row["id"], tenant)
+        dao.commit()
+    assert final["status"] == "DEAD" and final["attempts"] == 3
+    assert final["terminal_error_class"] == "MaxAttemptsExhausted"
+    assert stats["failed"] >= 1
+    with _factory() as dao:  # exhausted jobs are never claimed again
+        assert dao.claim(tenant, "worker-z", 60.0) is None
+        dao.commit()
+
+
+def test_mixed_crash_and_retry_exhaustion():
+    tenant, client = _scope("mixed")
+    row = _enqueue(tenant, client, _key("mix"), max_attempts=3)
+    with _factory() as dao:  # crash 1: abandoned claim, recovered (attempts=1)
+        assert dao.claim(tenant, "worker-gone", 3600.0) is not None
+        dao.commit()
+    _force_expire(row["id"])
+    with _factory() as dao:
+        assert [m["status"] for m in dao.recover_stale(tenant)] == ["QUEUED"]
+        dao.commit()
+
+    def always_retry(job: dict) -> None:
+        raise RetryableError("still broken")
+
+    serve(
+        _factory,
+        always_retry,
+        tenant_id=tenant,
+        lease_ttl=30.0,
+        idle_timeout=5.0,
+        deadline_seconds=60.0,
+        sweep_interval=60.0,
+    )
+    with _factory() as dao:
+        final = dao.get(row["id"], tenant)
+        dao.commit()
+    assert final["status"] == "DEAD" and final["attempts"] == 3  # 1 crash + 2 retries
+
+
+# -- duplicate delivery, single effect ----------------------------------------------
+def test_duplicate_delivery_single_committed_effect():
+    table = "ep04c1_effects_dup"
+    _effect_table(table)
+    tenant, client = _scope("dupfx")
+    row = _enqueue(tenant, client, _key("dupfx"))
+
+    def handler(job: dict) -> None:
+        with psycopg.connect(
+            _to_libpq(_destructive_or_skip()), connect_timeout=5
+        ) as conn:
+            conn.execute(
+                f"INSERT INTO {table} (job_id, runs) VALUES (%s, 1) ON CONFLICT (job_id) DO NOTHING",
+                (job["id"],),
+            )
+            conn.commit()
+        raise RetryableError("synthetic crash after effect")
+
+    with _factory() as dao:  # first delivery: effect + transient failure
+        claimed = dao.claim(tenant, "worker-e1", 60.0)
+        dao.commit()
+    assert claimed is not None
+    with pytest.raises(RetryableError):  # effect commits, then the crash
+        handler(claimed)
+    with _factory() as dao:  # redelivery after requeue
+        assert dao.fail_transient(
+            claimed["id"], "worker-e1", claimed["fencing_token"], "x", "RetryableError"
+        )
+        dao.commit()
+    _make_job_due(row["id"])  # backoff is real; force eligibility deterministically
+    with _factory() as dao:
+        again = dao.claim(tenant, "worker-e2", 60.0)
+        dao.commit()
+    assert again is not None and again["id"] == row["id"]
+    assert _effect_runs(table) == {row["id"]: 1}  # effect ran twice, committed once
+
+
+def test_diagnostics_carry_no_exception_text(caplog):  # type: ignore[no-untyped-def]
+    import logging
+    import re
+
+    tenant, client = _scope("diag")
+    row = _enqueue(tenant, client, _key("diag"), max_attempts=1)
+    head_secret = f"HEAD-{uuid.uuid4().hex}"
+    tail_secret = f"TAIL-{uuid.uuid4().hex}"
+    payload = head_secret + "\nmultiline\n" + "X" * 5000 + "\n" + tail_secret
+
+    def nasty(job: dict) -> None:
+        raise RuntimeError(payload)
+
+    with caplog.at_level(logging.INFO, logger="app.jobs.durable"):
+        serve(
+            _factory,
+            nasty,
+            tenant_id=tenant,
+            lease_ttl=30.0,
+            idle_timeout=5.0,
+            deadline_seconds=30.0,
+            sweep_interval=60.0,
+        )
+    with _factory() as dao:
+        final = dao.get(row["id"], tenant)
+        dao.commit()
+    assert final["status"] == "DEAD"  # single attempt spent terminally
+    stored = final["last_error"] or ""
+    assert re.fullmatch(r"HANDLER_UNEXPECTED ref=[0-9a-f]{16}", stored), stored
+    assert head_secret not in stored and tail_secret not in stored
+    assert "X" * 100 not in stored  # unbounded body never persisted
+    assert final["last_error_class"] == "RuntimeError"  # safe class name only
+    assert final["terminal_error_class"] == "MaxAttemptsExhausted"  # exhaustion marker
+    log_text = caplog.text
+    assert head_secret not in log_text and tail_secret not in log_text
+    assert payload not in log_text  # operational logs carry code + ref, never text
+    assert "HANDLER_UNEXPECTED ref=" in log_text  # row and log join on the ref
+
+
+def test_retry_then_success_records_backoff_and_attempts():
+    tenant, client = _scope("settle")
+    row = _enqueue(tenant, client, _key("flaky"))
+    calls = {"n": 0}
+
+    def flaky(job: dict) -> None:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RetryableError("transient wobble")
+
+    stats = serve(
+        _factory,
+        flaky,
+        tenant_id=tenant,
+        lease_ttl=30.0,
+        stop_after_jobs=1,
+        idle_timeout=30.0,
+    )
+    assert stats == {
+        "completed": 1,
+        "retried": 1,
+        "failed": 0,
+        "stale": 0,
+        "recovered": 0,
+        "recover_runs": stats["recover_runs"],
+    }
+    with _factory() as dao:
+        final = dao.get(row["id"], tenant)
+        assert final["status"] == "SUCCEEDED" and final["attempts"] == 2
+        assert final["last_error"].startswith("HANDLER_RETRYABLE ref=")
+        dao.commit()
+
+
+def test_terminal_and_unexpected_settlement_paths():
+    tenant, client = _scope("paths")
+    doomed = _enqueue(tenant, client, _key("doomed"))
+    with _factory() as dao:
+        claimed = dao.claim(tenant, "worker-t", 60.0)
+        assert claimed is not None
+        assert (
+            dao.finish(
+                doomed["id"],
+                "worker-t",
+                claimed["fencing_token"],
+                False,
+                "TerminalError: no",
+                "TerminalError",
+            )
+            is True
+        )
+        dao.commit()
+    with _factory() as dao:
+        final = dao.get(doomed["id"], tenant)
+        assert (
+            final["status"] == "FAILED"
+            and final["terminal_error_class"] == "TerminalError"
+        )
+        assert final["attempts"] == 1  # terminal failure spends no extra attempt
+        dao.commit()
+    via_serve = _enqueue(tenant, client, _key("boom"))
+
+    def unexpected(job: dict) -> None:
+        raise RuntimeError("unforeseen bug")
+
+    stats = serve(
+        _factory,
+        unexpected,
+        tenant_id=tenant,
+        lease_ttl=30.0,
+        deadline_seconds=4.0,
+        sweep_interval=60.0,
+    )
+    assert stats["retried"] >= 1  # unexpected faults retry transiently, never terminal
+    with _factory() as dao:
+        assert dao.get(via_serve["id"], tenant)["status"] == "QUEUED"
+        dao.commit()
+
+
+# -- Redis loss is delay-only ----------------------------------------------------------
+def _redis():
+    import redis as redis_lib
+
+    return redis_lib.Redis.from_url(REDIS_TEST_URL, socket_timeout=5)
+
+
+def test_redis_flush_and_outage_lose_nothing():
+    tenant, client = _scope("rloss")
+    bus = WakeupBus(REDIS_TEST_URL, key=f"tp:pgwake-{uuid.uuid4().hex}")
+    ids = []
+    for i in range(3):
+        row = _enqueue(tenant, client, _key(f"rloss-{i}"))
+        ids.append(row["id"])
+        assert bus.notify(row["id"]) is True
+    _redis().flushdb()  # total wakeup loss on the ISOLATED test database only
+    done: list = []
+    stats = serve(
+        _factory,
+        lambda job: done.append(job["id"]),
+        tenant_id=tenant,
+        lease_ttl=30.0,
+        stop_after_jobs=3,
+        idle_timeout=15.0,
+        wakeups=bus,
+    )
+    assert stats["completed"] == 3 and sorted(done) == sorted(ids)
+    dead = WakeupBus("redis://127.0.0.1:9/0")
+    assert dead.notify("x") is False and dead.wait(0.1) is None
+
+
+def test_wakeup_traffic_never_touches_shared_db():
+    from urllib.parse import urlparse
+
+    assert urlparse(REDIS_TEST_URL).path in ("/15", "15")  # isolated test database
+    bus = WakeupBus(REDIS_TEST_URL, key=f"tp:pgwake-{uuid.uuid4().hex}")
+    assert bus.notify("sentinel") is True
+    _redis().flushdb()
+    assert bus.wait(0.5) is None  # loss is observable, harmless, and scoped
+
+
+# -- PG outage + ack ambiguity ------------------------------------------------------------
+def test_pg_outage_fails_closed_without_phantom():
+    from sqlalchemy import create_engine
+
+    engine = create_engine(
+        "postgresql+psycopg://taxpilot:taxpilot@127.0.0.1:9/taxpilot",
+        connect_args={"connect_timeout": 2},
+    )
+    with pytest.raises(Exception):  # connect itself refuses: no phantom success
+        with session(engine, tables()) as dao:
+            dao.enqueue("t", "c", "op", "k", {})
+    engine.dispose()
+
+
+def test_ambiguous_commit_ack_converges_without_double():
+    tenant, client = _scope("ack")
+    key = _key("ack")
+    first = _enqueue(tenant, client, key, {"v": 1})
+    # The acknowledgement was "lost": re-query + idempotent retry converge.
+    again = _enqueue(tenant, client, key, {"v": 1})
+    assert again["id"] == first["id"]
+    with _factory() as dao:
+        rows = dao.get(first["id"], tenant)
+        assert rows is not None
+        all_ids = [r["id"] for r in [rows]]
+    assert len(all_ids) == 1
+
+
+# -- tenant isolation ------------------------------------------------------------------
+def test_cross_tenant_claims_and_keys_isolated():
+    tenant_a, client_a = _scope("iso-a")
+    tenant_b, client_b = _scope("iso-b")
+    row = _enqueue(tenant_a, client_a, _key("iso"))
+    with _factory() as dao:
+        assert dao.claim(tenant_b, "worker-z", 60.0) is None
+        assert dao.get(row["id"], tenant_b) is None
+        metrics_b = dao.metrics(tenant_b)
+        assert metrics_b["jobs"]["QUEUED"]["count"] == 0
+        dao.commit()
+
+
+def _second_client(tenant_id: str, tag: str) -> str:
+    client_id = str(uuid.uuid4())
+    with psycopg.connect(_to_libpq(_destructive_or_skip()), connect_timeout=5) as conn:
+        conn.execute(
+            "INSERT INTO clients (id, tenant_id, name) VALUES (%s, %s, %s)",
+            (client_id, tenant_id, f"c-{tag}"),
+        )
+        conn.commit()
+    return client_id
+
+
+def test_same_key_across_clients_and_operations_isolated():
+    tenant, client_a = _scope("scope-a")
+    client_b = _second_client(tenant, "scope-b")
+    key = _key("shared")
+    job_a = _enqueue(tenant, client_a, key, {"v": 1})
+    job_b = _enqueue(tenant, client_b, key, {"v": 1})  # same key, other client
+    assert job_b["id"] != job_a["id"]
+    with _factory() as dao:
+        other_op = dao.enqueue(tenant, client_a, "synthetic.other", key, {"v": 1})
+        dao.commit()
+    assert other_op["id"] not in (job_a["id"], job_b["id"])  # same key, other operation
+    with _factory() as dao:  # same full scope still converges
+        assert (
+            dao.enqueue(tenant, client_a, "synthetic.noop", key, {"v": 1})["id"]
+            == job_a["id"]
+        )
+        dao.commit()
+
+
+def test_outbox_event_tenant_bound_to_its_job():
+    from sqlalchemy.exc import IntegrityError
+
+    tenant_a, _client_a = _scope("obiso-a")
+    tenant_b, client_b = _scope("obiso-b")
+    job_a = _enqueue(tenant_a, _client_a, _key("obiso"))
+    with _factory() as dao:
+        with pytest.raises(IntegrityError):  # event tenant must equal job tenant
+            dao.outbox_publish(tenant_b, job_a["id"], _key("evx"), "t", {})
+        dao.rollback()
+        unrelated = _enqueue(tenant_b, client_b, _key("obiso2"))
+        event = dao.outbox_publish(tenant_b, unrelated["id"], _key("evx"), "t", {})
+        dao.commit()
+        assert event["tenant_id"] == tenant_b
+
+
+# -- outbox -------------------------------------------------------------------------------
+def test_outbox_atomic_publish_claim_ack_lifecycle():
+    tenant, client = _scope("outbox")
+    with _factory() as dao:
+        job = dao.enqueue(tenant, client, "synthetic.noop", _key("ob"), {"v": 1})
+        event = dao.outbox_publish(
+            tenant, job["id"], _key("ev"), "scan.requested", {"job": job["id"]}
+        )
+        dao.commit()
+    with _factory() as dao:
+        first_publish = dao.outbox_publish(
+            tenant, job["id"], _key("ev2"), "scan.requested", {"job": job["id"]}
+        )
+        replay = dao.outbox_publish(
+            tenant,
+            job["id"],
+            first_publish["event_key"],
+            "scan.requested",
+            {"job": job["id"]},
+        )
+        assert replay["id"] == first_publish["id"]  # same logical event
+        dao.commit()
+    with _factory() as dao:
+        claimed = dao.outbox_claim(tenant, "publisher-a", 60.0, limit=10)
+        assert sorted(e["id"] for e in claimed) == sorted(
+            [event["id"], first_publish["id"]]
+        )
+        tokens = {e["id"]: e["fencing_token"] for e in claimed}
+        assert (
+            tokens[event["id"]] and tokens[event["id"]] != tokens[first_publish["id"]]
+        )
+        assert (
+            dao.outbox_ack(event["id"], "publisher-a", tokens[event["id"]], True)
+            == "PUBLISHED"
+        )
+        assert (
+            dao.outbox_ack(event["id"], "publisher-a", tokens[event["id"]], True)
+            is None
+        )  # already published: fenced
+        assert (
+            dao.outbox_ack(
+                first_publish["id"], "publisher-a", tokens[first_publish["id"]], True
+            )
+            == "PUBLISHED"
+        )
+        dao.commit()
+    with _factory() as dao:  # all published: nothing claimable
+        assert dao.outbox_claim(tenant, "publisher-a", 60.0) == []
+        dao.commit()
+
+
+def test_outbox_conflicting_reuse_rejected():
+    from app.jobs import OutboxConflictError
+
+    tenant, client = _scope("obconflict")
+    row = _enqueue(tenant, client, _key("obc"))
+    shared_key = _key("shared-ev")
+    with _factory() as dao:
+        dao.outbox_publish(tenant, row["id"], shared_key, "scan.requested", {"v": 1})
+        dao.commit()
+    with _factory() as dao:  # same key, different payload identity
+        with pytest.raises(OutboxConflictError):
+            dao.outbox_publish(
+                tenant, row["id"], shared_key, "scan.requested", {"v": 2}
+            )
+        dao.rollback()
+    with _factory() as dao:  # same key, different event type
+        with pytest.raises(OutboxConflictError):
+            dao.outbox_publish(tenant, row["id"], shared_key, "other.type", {"v": 1})
+        dao.rollback()
+    with _factory() as dao:  # same key on ANOTHER job stays independent
+        other = _enqueue(tenant, client, _key("obc2"))
+        independent = dao.outbox_publish(
+            tenant, other["id"], shared_key, "scan.requested", {"v": 1}
+        )
+        dao.commit()
+        assert independent["job_id"] == other["id"]
+
+
+def _make_due(event_id: str) -> None:
+    """Force an outbox row due now (backoff is real; tests must not sleep on it)."""
+    with psycopg.connect(_to_libpq(_destructive_or_skip()), connect_timeout=5) as conn:
+        conn.execute(
+            "UPDATE job_outbox SET next_attempt_at = clock_timestamp() WHERE id = %s",
+            (event_id,),
+        )
+        conn.commit()
+
+
+def _make_job_due(job_id: str) -> None:
+    """Force a requeued job eligible now (same deterministic backoff bypass)."""
+    with psycopg.connect(_to_libpq(_destructive_or_skip()), connect_timeout=5) as conn:
+        conn.execute(
+            "UPDATE extraction_jobs SET not_before = clock_timestamp() WHERE id = %s",
+            (job_id,),
+        )
+        conn.commit()
+
+
+def test_outbox_nack_backs_off_before_due():
+    tenant, client = _scope("obnack")
+    row = _enqueue(tenant, client, _key("obn"))
+    with _factory() as dao:
+        event = dao.outbox_publish(
+            tenant, row["id"], _key("obnev"), "t", {}, max_attempts=5
+        )
+        dao.commit()
+    with _factory() as dao:
+        claimed = dao.outbox_claim(tenant, "publisher-n", 60.0)
+        assert len(claimed) == 1
+        assert (
+            dao.outbox_ack(
+                event["id"], "publisher-n", claimed[0]["fencing_token"], False
+            )
+            == "PENDING"
+        )
+        dao.commit()
+    with _factory() as dao:  # backed off: not due until forced
+        assert dao.outbox_claim(tenant, "publisher-n", 60.0) == []
+        dao.commit()
+    _make_due(event["id"])
+    with _factory() as dao:
+        assert [e["id"] for e in dao.outbox_claim(tenant, "publisher-n", 60.0)] == [
+            event["id"]
+        ]
+        dao.commit()
+
+
+def test_outbox_backoff_and_dead_and_cross_tenant():
+    tenant, client = _scope("obfail")
+    row = _enqueue(tenant, client, _key("obf"))
+    with _factory() as dao:
+        event = dao.outbox_publish(
+            tenant, row["id"], _key("obev"), "t", {}, max_attempts=2
+        )
+        dao.commit()
+    for round_no in range(2):  # publisher crashes twice holding the lease (no ack)
+        with _factory() as dao:
+            claimed = dao.outbox_claim(tenant, "publisher-f", 60.0)
+            assert len(claimed) == 1
+            dao.commit()
+        _expire_outbox_lease(event["id"])
+        with _factory() as dao:  # sweep spends one attempt per crashed recovery
+            swept = dao.outbox_sweep(tenant)
+            # First crash requeues PENDING; the second exhausts max_attempts=2.
+            assert [(s["id"], s["status"]) for s in swept] == [
+                (event["id"], "PENDING" if round_no == 0 else "FAILED")
+            ]
+            dao.commit()
+        _make_due(event["id"])  # backoff is real: force due deterministically
+    # Two crashed attempts exhaust max_attempts=2: terminal FAILED, unclaimable.
+    with _factory() as dao:
+        assert dao.outbox_sweep(tenant) == []
+        assert dao.outbox_claim(tenant, "publisher-f", 60.0) == []
+        other_tenant, _other_client = _scope("obother")
+        assert dao.outbox_claim(other_tenant, "publisher-f", 60.0) == []
+        dao.commit()
+    with psycopg.connect(_to_libpq(_destructive_or_skip()), connect_timeout=5) as conn:
+        status = conn.execute(
+            "SELECT status, attempts FROM job_outbox WHERE id = %s", (event["id"],)
+        ).fetchone()
+        assert (status[0], status[1]) == ("FAILED", 2)
+
+
+def test_outbox_survives_redis_loss():
+    tenant, client = _scope("obloss")
+    row = _enqueue(tenant, client, _key("obl"))
+    with _factory() as dao:
+        event = dao.outbox_publish(tenant, row["id"], _key("oblev"), "t", {})
+        dao.commit()
+    _redis().flushdb()  # isolated test database only; shared dev db 0 untouched
+    with _factory() as dao:
+        assert [e["id"] for e in dao.outbox_claim(tenant, "publisher-o", 60.0)] == [
+            event["id"]
+        ]
+        dao.commit()
+
+
+def test_outbox_concurrent_publishers_single_claim():
+    tenant, client = _scope("obrace")
+    row = _enqueue(tenant, client, _key("obr"))
+    with _factory() as dao:
+        event = dao.outbox_publish(tenant, row["id"], _key("obrev"), "t", {})
+        dao.commit()
+    barrier = threading.Barrier(4)
+    winners: list = []
+
+    def publish() -> None:
+        barrier.wait(timeout=10)
+        with _factory() as dao:
+            claimed = dao.outbox_claim(tenant, "publisher-r", 60.0)
+            dao.commit()
+            winners.extend(e["id"] for e in claimed)
+
+    threads = [threading.Thread(target=publish) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=60)
+    assert winners == [event["id"]]  # exactly one publisher owns it
+
+
+def test_outbox_crash_recovery_releases_lease_with_new_token():
+    tenant, client = _scope("obcrash")
+    row = _enqueue(tenant, client, _key("obc"))
+    with _factory() as dao:
+        event = dao.outbox_publish(tenant, row["id"], _key("obcev"), "t", {})
+        dao.commit()
+    with _factory() as dao:  # publisher A claims then dies without ack
+        claimed = dao.outbox_claim(tenant, "publisher-dead", 60.0)
+        assert len(claimed) == 1
+        old_token = claimed[0]["fencing_token"]
+        dao.commit()
+    _expire_outbox_lease(event["id"])
+    with _factory() as dao:  # stale ack from the dead owner is rejected
+        assert dao.outbox_ack(event["id"], "publisher-dead", old_token, True) is None
+        dao.commit()
+    with _factory() as dao:  # sweeper releases the expired lease (one attempt spent)
+        swept = dao.outbox_sweep(tenant)
+        assert [(s["id"], s["status"]) for s in swept] == [(event["id"], "PENDING")]
+        dao.commit()
+    with _factory() as dao:  # publisher B claims with a fresh fencing token
+        reclaimed = dao.outbox_claim(tenant, "publisher-b", 60.0)
+        assert len(reclaimed) == 1 and reclaimed[0]["fencing_token"] != old_token
+        assert (
+            dao.outbox_ack(
+                event["id"], "publisher-b", reclaimed[0]["fencing_token"], True
+            )
+            == "PUBLISHED"
+        )
+        dao.commit()
+
+
+def test_outbox_takeover_publishes_exactly_once_downstream():
+    from app.jobs import serve_outbox
+
+    table = "ep04c1_effects_ob"
+    _effect_table(table)
+    tenant, client = _scope("obtake")
+    row = _enqueue(tenant, client, _key("obt"))
+    with _factory() as dao:
+        event = dao.outbox_publish(tenant, row["id"], _key("obtev"), "t", {})
+        dao.commit()
+
+    def receive(effect_event: dict) -> None:
+        with psycopg.connect(
+            _to_libpq(_destructive_or_skip()), connect_timeout=5
+        ) as conn:
+            conn.execute(
+                f"INSERT INTO {table} (job_id, runs) VALUES (%s, 1) "
+                "ON CONFLICT (job_id) DO NOTHING",
+                (effect_event["id"],),
+            )
+            conn.commit()
+
+    with _factory() as dao:  # publisher A claims, then dies before ack
+        first = dao.outbox_claim(tenant, "publisher-gone", 60.0)
+        assert len(first) == 1
+        dead_token = first[0]["fencing_token"]
+        dao.commit()
+    _expire_outbox_lease(event["id"])
+    stats = serve_outbox(
+        _factory,
+        receive,
+        publisher_id="publisher-b",
+        tenant_id=tenant,
+        lease_ttl=60.0,
+        idle_timeout=5.0,
+        deadline_seconds=30.0,
+        sweep_interval=60.0,
+    )
+    assert stats["published"] == 1
+    assert _effect_runs(table) == {
+        event["id"]: 1
+    }  # delivered twice at most, effected once
+    with _factory() as dao:  # stale A ack stays rejected after takeover
+        assert dao.outbox_ack(event["id"], "publisher-gone", dead_token, True) is None
+        dao.commit()
+
+
+def _expire_outbox_lease(event_id: str) -> None:
+    with psycopg.connect(_to_libpq(_destructive_or_skip()), connect_timeout=5) as conn:
+        conn.execute(
+            "UPDATE job_outbox SET lease_expires_at = clock_timestamp() - make_interval(secs => 5) "
+            "WHERE id = %s",
+            (event_id,),
+        )
+        conn.commit()
+
+
+# -- metrics carry no content ---------------------------------------------------------------
+def test_metrics_metadata_only():
+    tenant, client = _scope("metrics")
+    marker = f"SYNTHETIC-MARKER-{uuid.uuid4().hex}"
+    _enqueue(tenant, client, _key("m"), {"note": marker})
+    with _factory() as dao:
+        metrics = dao.metrics(tenant)
+        assert metrics["jobs"]["QUEUED"]["count"] >= 1
+        assert marker not in str(metrics)
+        dao.commit()
+
+
+# -- synthetic load numbers --------------------------------------------------------------------
+def test_synthetic_load_reports_throughput():
+    import time as time_module
+
+    tenant, client = _scope("load")
+    total = 200
+    for i in range(total):
+        _enqueue(tenant, client, _key(f"load-{i}"))
+    barrier = threading.Barrier(4)
+    started = time_module.time()
+    results: list = []
+
+    def work() -> dict:
+        barrier.wait(timeout=10)
+        return serve(
+            _factory,
+            lambda job: None,
+            tenant_id=tenant,
+            lease_ttl=60.0,
+            poll_interval=0.05,
+            sweep_interval=30.0,
+            idle_timeout=10.0,
+        )
+
+    threads = [
+        threading.Thread(target=lambda: results.append(work())) for _ in range(4)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=300)
+    elapsed = time_module.time() - started
+    completed = sum(r["completed"] for r in results)
+    print(
+        f"\nSYNTHETIC LOAD: {completed}/{total} jobs, 4 workers, {elapsed:.1f}s "
+        f"({completed / max(elapsed, 0.01):.0f} jobs/s)"
+    )
+    assert completed == total
+    with _factory() as dao:
+        assert dao.metrics(tenant)["jobs"]["QUEUED"]["count"] == 0
+        dao.commit()

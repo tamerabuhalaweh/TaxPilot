@@ -24,7 +24,7 @@ psycopg = pytest.importorskip("psycopg")
 
 from app.deps import settings_singleton  # noqa: E402
 from app.main import create_app  # noqa: E402
-from db.migrate import migrate  # noqa: E402
+from db.migrate import _to_libpq, migrate  # noqa: E402
 
 REQUIRE_SERVICES = os.environ.get("REQUIRE_SERVICES") == "1"
 PASSWORD = "correct horse battery staple"
@@ -621,7 +621,208 @@ def test_audit_trail_without_contents_or_keys(api):  # type: ignore[no-untyped-d
     assert all(r.startswith(("intake:", "client:")) for r in resources)
 
 
-# -- migration + conformance ------------------------------------------------------
+# -- R1 database lineage isolation + immutability ----------------------------------
+def _pg_scope(tag: str):  # type: ignore[no-untyped-def]
+    """Create tenant+client rows directly; returns ids. Caller manages cleanup."""
+    url = _scratch_or_skip()
+    tenant_id = str(uuid.uuid4())
+    client_id = str(uuid.uuid4())
+    with psycopg.connect(_to_libpq(url), connect_timeout=5) as conn:
+        conn.execute(
+            "INSERT INTO tenants (id, name) VALUES (%s, %s)", (tenant_id, f"t-{tag}")
+        )
+        conn.execute(
+            "INSERT INTO clients (id, tenant_id, name) VALUES (%s, %s, %s)",
+            (client_id, tenant_id, f"c-{tag}"),
+        )
+        conn.commit()
+    return tenant_id, client_id
+
+
+def _pg_intake(tenant_id: str, client_id: str, key: str, token: str, **overrides):  # type: ignore[no-untyped-def]
+    """Insert one intake row directly; returns id. Rolls back on any failure."""
+    url = _scratch_or_skip()
+    fields = {
+        "id": str(uuid.uuid4()),
+        "tenant_id": tenant_id,
+        "client_id": client_id,
+        "idempotency_key": key,
+        "storage_key": f"{tenant_id}/ab/{token}",
+        "content_sha256": "cc" * 32,
+        "byte_count": 3,
+        "filename": "s.csv",
+        "declared_type": "csv",
+        "uploaded_by": None,
+    }
+    fields.update(overrides)
+    columns = ", ".join(fields)
+    placeholders = ", ".join(["%s"] * len(fields))
+    with psycopg.connect(_to_libpq(url), connect_timeout=5) as conn:
+        try:
+            conn.execute(
+                f"INSERT INTO document_intakes ({columns}) VALUES ({placeholders})",
+                tuple(fields.values()),
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+    return fields["id"]
+
+
+def test_lineage_parent_rejects_cross_tenant_and_cross_client():  # type: ignore[no-untyped-def]
+    t1, c1 = _pg_scope("lin-a")
+    t2, c2 = _pg_scope("lin-b")
+    parent = _pg_intake(t1, c1, "k-parent", "t" * 43)
+    with pytest.raises(Exception, match="(?i)(foreign key|violates)"):
+        _pg_intake(t2, c2, "k-evil-tenant", "u" * 43, parent_id=parent)
+    c1b = str(uuid.uuid4())
+    url = _scratch_or_skip()
+    with psycopg.connect(_to_libpq(url), connect_timeout=5) as conn:
+        conn.execute(
+            "INSERT INTO clients (id, tenant_id, name) VALUES (%s, %s, %s)",
+            (c1b, t1, "c-lin-a2"),
+        )
+        conn.commit()
+    with pytest.raises(Exception, match="(?i)(foreign key|violates)"):
+        _pg_intake(t1, c1b, "k-evil-client", "v" * 43, parent_id=parent)
+    # Same-scope lineage is accepted (control proves the FK, not the test, rejects).
+    child = _pg_intake(t1, c1, "k-child", "w" * 43, parent_id=parent, version=2)
+    assert child != parent
+
+
+def test_duplicate_of_rejects_cross_scope():  # type: ignore[no-untyped-def]
+    t1, c1 = _pg_scope("dup-a")
+    t2, c2 = _pg_scope("dup-b")
+    original = _pg_intake(t1, c1, "k-orig", "t" * 43)
+    with pytest.raises(Exception, match="(?i)(foreign key|violates)"):
+        _pg_intake(t2, c2, "k-evil-dup", "u" * 43, duplicate_of=original)
+
+
+def test_accepted_metadata_immutable_at_database_layer():  # type: ignore[no-untyped-def]
+    t1, c1 = _pg_scope("imm")
+    row_id = _pg_intake(t1, c1, "k-imm", "t" * 43)
+    url = _scratch_or_skip()
+    for column, value in [
+        ("filename", "renamed.csv"),
+        ("content_sha256", "dd" * 32),
+        ("storage_key", f"{t1}/ab/{'z' * 43}"),
+        ("version", 99),
+        ("byte_count", 12345),
+    ]:
+        with psycopg.connect(_to_libpq(url), connect_timeout=5) as conn:
+            with pytest.raises(
+                Exception, match="(?i)(immutable|permission denied|violates)"
+            ):
+                conn.execute(
+                    f"UPDATE document_intakes SET {column} = %s WHERE id = %s",
+                    (value, row_id),
+                )
+            conn.rollback()
+
+
+def test_authorized_status_transition_policy():  # type: ignore[no-untyped-def]
+    """Future scan gate may move QUARANTINED -> REJECTED (terminal); all else refused."""
+    t1, c1 = _pg_scope("trans")
+    row_id = _pg_intake(t1, c1, "k-trans", "t" * 43)
+    url = _scratch_or_skip()
+    with psycopg.connect(_to_libpq(url), connect_timeout=5) as conn:
+        conn.execute(
+            "UPDATE document_intakes SET status = 'REJECTED', reason = 'synthetic scan verdict' "
+            "WHERE id = %s",
+            (row_id,),
+        )
+        conn.commit()
+        status = conn.execute(
+            "SELECT status, reason FROM document_intakes WHERE id = %s", (row_id,)
+        ).fetchone()
+        assert status[0] == "REJECTED" and "synthetic" in status[1]
+        with pytest.raises(Exception, match="(?i)(not authorized|immutable)"):
+            conn.execute(
+                "UPDATE document_intakes SET status = 'QUARANTINED' WHERE id = %s",
+                (row_id,),
+            )
+        conn.rollback()
+        with pytest.raises(Exception, match="(?i)(not authorized|immutable)"):
+            conn.execute(
+                "UPDATE document_intakes SET status = 'CLEAN' WHERE id = %s", (row_id,)
+            )
+        conn.rollback()
+
+
+# -- R3 commit-uncertainty ---------------------------------------------------------
+def test_commit_ack_loss_preserves_blob_and_record(api, monkeypatch):  # type: ignore[no-untyped-def]
+    """COMMIT succeeds server-side but its acknowledgement is lost: the row is
+    committed, so the blob must be PRESERVED (never deleted) for reconciliation."""
+    from sqlalchemy.engine import Connection
+
+    client, root = api
+    _onboard(client, "ackloss")
+    firm_client = _make_client(client)
+    real_commit = Connection.commit
+    calls = {"n": 0}
+
+    def commit_then_lose_ack(self):  # type: ignore[no-untyped-def]
+        real_commit(self)
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("synthetic COMMIT acknowledgement loss")
+
+    monkeypatch.setattr(Connection, "commit", commit_then_lose_ack)
+    r = _csv_upload(client, firm_client["id"], "key-ackloss")
+    assert r.status_code == 500  # honest failure surfaced, not a false success
+    listed = client.get(f"/api/v1/clients/{firm_client['id']}/document-intakes").json()
+    assert len(listed) == 1  # the committed record survived
+    assert listed[0]["sha256"] == hashlib.sha256(CSV_BYTES).hexdigest()
+    assert (
+        len([p for p in root.rglob("*") if p.is_file()]) == 1
+    )  # blob preserved with it
+
+
+# -- R2 POSIX permission enforcement -------------------------------------------------
+def test_quarantine_blob_and_dirs_owner_only_posix(tmp_path):  # type: ignore[no-untyped-def]
+    if os.name == "nt":
+        pytest.skip("POSIX permission bits verified on non-Windows CI")
+    import stat as stat_module
+
+    from app.quarantine import LocalQuarantine, new_storage_key
+
+    store = LocalQuarantine(str(tmp_path))
+    tenant = str(uuid.uuid4())
+    key = new_storage_key(tenant, "ab" * 32)
+    store.put(key, b"secret-bytes")
+    assert stat_module.S_IMODE(os.stat(tmp_path).st_mode) == 0o700
+    shard = tmp_path / tenant / "ab"
+    assert stat_module.S_IMODE(os.stat(shard).st_mode) == 0o700
+    assert store.blob_mode(key) == 0o600
+
+
+def test_loose_root_tightened_and_symlink_shard_refused(tmp_path):  # type: ignore[no-untyped-def]
+    if os.name == "nt":
+        pytest.skip("POSIX permission bits verified on non-Windows CI")
+    import stat as stat_module
+
+    from app.quarantine import LocalQuarantine, StorageUnavailable, new_storage_key
+
+    os.chmod(tmp_path, 0o755)
+    store = LocalQuarantine(str(tmp_path))
+    tenant = str(uuid.uuid4())
+    store.put(new_storage_key(tenant, "ab" * 32), b"x")
+    assert (
+        stat_module.S_IMODE(os.stat(tmp_path).st_mode) == 0o700
+    )  # repaired, not refused
+    shard = tmp_path / tenant / "ab"
+    link = tmp_path / tenant / "cd"
+    try:
+        link.symlink_to(shard, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks unavailable")
+    evil_key = f"{tenant}/cd/" + "y" * 43
+    with pytest.raises(StorageUnavailable):
+        store.put(evil_key, b"evil")
+    assert not (shard / ("y" * 43)).exists()
+
+
 def test_migration_0005_applied_and_conformant():  # type: ignore[no-untyped-def]
     from sqlalchemy import create_engine
 

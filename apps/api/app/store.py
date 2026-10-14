@@ -149,6 +149,7 @@ document_intakes = Table(
     Column("reason", Text),
     Column("uploaded_by", UUID(as_uuid=True)),
     Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
 )
 
 # -- JUR-01 Phase 1 jurisdiction tables (migration 0004; no presences/groups) --

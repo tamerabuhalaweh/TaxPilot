@@ -14,6 +14,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from ..deps import settings_singleton
@@ -127,6 +128,30 @@ def _check_signature(data: bytes, declared: str) -> None:
             raise AppError("VALIDATION_ERROR", "Declared csv content carries a non-CSV signature.")
 
 
+def _storage_key_committed(store, storage_key: str) -> bool:  # type: ignore[no-untyped-def]
+    """Check on a fresh connection whether a storage key has a committed row.
+
+    A fresh connection observes only committed state, so True means the record
+    survived regardless of what the failed transaction reports. Any check
+    failure resolves toward preservation (True): deleting a referenced blob
+    is worse than keeping an orphan for reconciliation.
+    """
+    try:
+        with store.conn.engine.connect() as fresh:
+            row = (
+                fresh.execute(
+                    select(store.t["document_intakes"].c.id).where(
+                        store.t["document_intakes"].c.storage_key == storage_key
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        return row is not None
+    except Exception:
+        return True
+
+
 @router.post("/clients/{client_id}/document-intakes", response_model=IntakeOut, status_code=201)
 async def upload_intake(
     client_id: str, request: Request, user: CurrentUser = Depends(require_roles(*WRITE))
@@ -233,8 +258,9 @@ async def upload_intake(
                 )
             conn.commit()
         except IntegrityError:
-            # Lost a concurrent race for this key: drop our orphan blob, then
-            # serve the winner (same content) or report the conflict.
+            # Lost a concurrent race for this key: our insert never committed,
+            # so our blob is definitionally orphaned — drop it, then serve the
+            # winner (same content) or report the conflict.
             conn.rollback()
             quarantine.delete(storage_key)
             leader = store.get_intakes_by_key(tenant_id, str(client["id"]), key)
@@ -243,7 +269,18 @@ async def upload_intake(
                 return _replay_response(same)
             raise AppError("STATE_CONFLICT", "Concurrent upload won this idempotency key.") from None
         except Exception:
-            conn.rollback()
+            # Commit outcome uncertain (e.g. COMMIT succeeded server-side but its
+            # acknowledgement was lost): rolling back here cannot un-commit. A
+            # failed rollback proves nothing either way, so verify on a FRESH
+            # connection — which observes only committed state — before touching
+            # the blob. When uncertain, the blob is PRESERVED for safe
+            # reconciliation; only a proven-absent record allows deletion.
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            if _storage_key_committed(store, storage_key):
+                raise
             quarantine.delete(storage_key)
             raise
         return _intake_out(row)

@@ -1,7 +1,8 @@
 """Private quarantine storage (EP-04B). Local dev/test adapter + fail-closed policy.
 
 Security model: opaque unpredictable keys (never derived from filenames),
-tenant-namespaced directories, atomic writes with restrictive permissions,
+tenant-namespaced directories, exclusive atomic writes that are owner-only
+from the first byte (no readable window), enforced owner-only directories,
 symlink refusal, path-containment checks on every access. No listing, no
 download, no content reads: quarantined bytes are write/delete-only until a
 future scan gate (EP-04C) authorizes release. Staging/production always report
@@ -14,11 +15,14 @@ from __future__ import annotations
 import os
 import re
 import secrets
+import stat
 from pathlib import Path
 
 _KEY_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/[0-9a-f]{2}/[A-Za-z0-9_-]{43}$"
 )
+_DIR_MODE = 0o700
+_FILE_MODE = 0o600
 
 
 class StorageUnavailable(Exception):
@@ -64,49 +68,114 @@ def _resolve(root: Path, key: str) -> Path:
     return candidate
 
 
+def _posix_owner(path: Path) -> int | None:
+    if not hasattr(os, "getuid"):
+        return None  # non-POSIX (e.g. Windows dev): ownership check unavailable
+    try:
+        return path.stat().st_uid
+    except OSError:
+        return None
+
+
+def _ensure_dir(path: Path, *, what: str) -> Path:
+    """Create-or-validate one quarantine directory: real dir, owner-only mode.
+
+    Pre-existing loose permissions are tightened (documented contract: roots
+    and shards are owner-only); symlinks, non-directories, and foreign-owned
+    directories fail closed.
+    """
+    if path.is_symlink():
+        raise StorageUnavailable(f"quarantine {what} must not be a symlink")
+    path.mkdir(mode=_DIR_MODE, parents=True, exist_ok=True)
+    if path.is_symlink() or not path.is_dir():
+        raise StorageUnavailable(f"quarantine {what} must be a real directory")
+    try:
+        os.chmod(path, _DIR_MODE)
+    except OSError as exc:
+        raise StorageUnavailable(f"quarantine {what} permissions cannot be enforced") from exc
+    if hasattr(os, "getuid"):
+        owner = _posix_owner(path)
+        if owner is not None and owner != os.getuid():
+            raise StorageUnavailable(f"quarantine {what} is not owned by this process user")
+    return path.resolve()
+
+
 class LocalQuarantine:
     """Development/test-only private quarantine rooted at one directory."""
 
     def __init__(self, root: str | Path) -> None:
         self._root = Path(root)
-        if self._root.is_symlink():
-            raise StorageUnavailable("quarantine root must not be a symlink")
+        _ensure_dir(self._root, what="root")
+
+    def _shard(self, key: str) -> tuple[Path, Path]:
+        tenant, shard, _token = key.split("/")
+        base = _ensure_dir(self._root, what="root")
+        tenant_dir = _ensure_dir(base / tenant, what="tenant directory")
+        shard_dir = _ensure_dir(tenant_dir / shard, what="shard directory")
+        path = _resolve(self._root, key)
+        if path.parent != shard_dir:
+            raise ValueError("storage path escapes quarantine")
+        return shard_dir, path
 
     def put(self, key: str, data: bytes) -> int:
-        """Atomically store bytes under an opaque key. Returns byte count."""
-        if self._root.is_symlink():
-            raise StorageUnavailable("quarantine root must not be a symlink")
-        path = _resolve(self._root, key)
-        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        if path.parent.is_symlink():
-            raise StorageUnavailable("quarantine shard must not be a symlink")
-        tmp = path.parent / f".tmp-{secrets.token_hex(8)}"
+        """Atomically store bytes under an opaque key. Returns byte count.
+
+        The temp file is created exclusively (O_EXCL: pre-existing symlinks or
+        files fail instead of being followed) with owner-only mode from the
+        first byte, so quarantined content is never group/other-readable —
+        not even between creation and chmod. Final placement is atomic rename.
+        """
+        if not isinstance(data, bytes | bytearray):
+            raise TypeError(f"data must be bytes, got {type(data).__name__}")
+        _shard_dir, path = self._shard(key)
+        for _attempt in range(3):
+            tmp = path.parent / f".tmp-{secrets.token_hex(16)}"
+            try:
+                fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, _FILE_MODE)
+            except FileExistsError:
+                continue
+            break
+        else:
+            raise StorageUnavailable("quarantine temp file cannot be created exclusively")
         try:
-            with open(tmp, "wb") as handle:
-                handle.write(data)
-            os.chmod(tmp, 0o600)
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(bytes(data))
+            os.chmod(tmp, _FILE_MODE)
+            if tmp.is_symlink():
+                raise StorageUnavailable("quarantine temp file is a symlink")
             os.replace(tmp, path)
-        finally:
+        except BaseException:
             try:
                 os.unlink(tmp)
             except OSError:
                 pass
+            raise
         return len(data)
 
     def delete(self, key: str) -> None:
         """Best-effort orphan cleanup. Missing blobs are not an error."""
         try:
-            path = _resolve(self._root, key)
-        except ValueError:
+            _shard_dir, path = self._shard(key)
+        except (ValueError, StorageUnavailable):
             return
         try:
+            if path.is_symlink():
+                return  # never follow links, even for deletion
             os.unlink(path)
         except FileNotFoundError:
             pass
 
     def exists(self, key: str) -> bool:
         try:
-            path = _resolve(self._root, key)
-        except ValueError:
+            _shard_dir, path = self._shard(key)
+        except (ValueError, StorageUnavailable):
             return False
         return path.is_file() and not path.is_symlink()
+
+    def blob_mode(self, key: str) -> int | None:
+        """POSIX mode bits of a stored blob (introspection for tests/ops)."""
+        try:
+            _shard_dir, path = self._shard(key)
+            return stat.S_IMODE(path.stat().st_mode)
+        except (ValueError, StorageUnavailable, OSError):
+            return None

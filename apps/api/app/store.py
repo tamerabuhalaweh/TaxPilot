@@ -164,6 +164,7 @@ obligations = Table(
     Column("id", UUID(as_uuid=True), primary_key=True),
     Column("tenant_id", UUID(as_uuid=True), nullable=False),
     Column("client_id", UUID(as_uuid=True), nullable=False),
+    Column("legal_entity_id", UUID(as_uuid=True), nullable=False),
     Column("jurisdiction_code", Text, nullable=False),
     Column("tax_type_code", Text, nullable=False),
     Column("regime_code", Text),
@@ -280,6 +281,13 @@ def assert_schema_matches(engine) -> None:  # type: ignore[no-untyped-def]
                 want_nullable = "YES" if column.nullable else "NO"
                 if actual[1] != want_nullable:
                     raise AssertionError(f"{name}.{column.name} nullability {actual[1]} != {want_nullable}")
+            # Reverse direction (PR-B hardening): every database column must be
+            # defined in code, so an omitted column (unreadable/unwritable field)
+            # fails loudly instead of surfacing as a runtime KeyError.
+            defined = {column.name for column in table.columns}
+            for actual_name in cols:
+                if actual_name not in defined:
+                    raise AssertionError(f"{name}.{actual_name} in database but missing from code")
 
 
 def utcnow() -> datetime:
@@ -687,6 +695,236 @@ class Store:
             .first()
         )
         return _row(row) if row else None
+
+    # -- jurisdiction: legal entities (PR-B) ------------------------------------
+    def create_legal_entity(
+        self,
+        tenant_id: str,
+        client_id: str,
+        legal_name: str,
+        incorporation_country_code: str,
+        base_currency: str,
+        entity_type: str = "COMPANY",
+        fiscal_start: str = "01-01",
+        parent_legal_entity_id: str | None = None,
+    ) -> dict:
+        row = (
+            self.conn.execute(
+                insert(self.t["legal_entities"])
+                .values(
+                    id=uuid.uuid4(),
+                    tenant_id=tenant_id,
+                    client_id=client_id,
+                    legal_name=legal_name,
+                    incorporation_country_code=incorporation_country_code,
+                    entity_type=entity_type,
+                    base_currency=base_currency,
+                    fiscal_start=fiscal_start,
+                    parent_legal_entity_id=parent_legal_entity_id,
+                )
+                .returning(self.t["legal_entities"])
+            )
+            .mappings()
+            .first()
+        )
+        return _row(row)
+
+    def get_legal_entity(self, entity_id: str, tenant_id: str) -> dict | None:
+        row = (
+            self.conn.execute(
+                select(self.t["legal_entities"])
+                .where(self.t["legal_entities"].c.id == entity_id)
+                .where(self.t["legal_entities"].c.tenant_id == tenant_id)
+            )
+            .mappings()
+            .first()
+        )
+        return _row(row) if row else None
+
+    def list_legal_entities(
+        self, tenant_id: str, client_id: str | None = None, status: str | None = None
+    ) -> list[dict]:
+        query = select(self.t["legal_entities"]).where(self.t["legal_entities"].c.tenant_id == tenant_id)
+        if client_id is not None:
+            query = query.where(self.t["legal_entities"].c.client_id == client_id)
+        if status is not None and status != "all":
+            query = query.where(self.t["legal_entities"].c.status == status)
+        rows = self.conn.execute(query.order_by(self.t["legal_entities"].c.created_at)).mappings().all()
+        return [_row(r) for r in rows]
+
+    def update_legal_entity(self, entity_id: str, tenant_id: str, **fields: Any) -> dict | None:
+        row = (
+            self.conn.execute(
+                update(self.t["legal_entities"])
+                .where(self.t["legal_entities"].c.id == entity_id)
+                .where(self.t["legal_entities"].c.tenant_id == tenant_id)
+                .values(**fields)
+                .returning(self.t["legal_entities"])
+            )
+            .mappings()
+            .first()
+        )
+        return _row(row) if row else None
+
+    # -- jurisdiction: tax contexts (PR-B) --------------------------------------
+    def create_tax_context(
+        self,
+        tenant_id: str,
+        client_id: str,
+        subject_entity_id: str,
+        jurisdiction_code: str,
+        tax_type_code: str,
+        period_start: Any,
+        period_end: Any,
+        obligation_profile_id: str | None = None,
+        regime_code: str | None = None,
+        pack_version: str | None = None,
+    ) -> dict:
+        row = (
+            self.conn.execute(
+                insert(self.t["tax_contexts"])
+                .values(
+                    id=uuid.uuid4(),
+                    tenant_id=tenant_id,
+                    client_id=client_id,
+                    subject_kind="LEGAL_ENTITY",
+                    subject_entity_id=subject_entity_id,
+                    obligation_profile_id=obligation_profile_id,
+                    jurisdiction_code=jurisdiction_code,
+                    tax_type_code=tax_type_code,
+                    regime_code=regime_code,
+                    period_start=period_start,
+                    period_end=period_end,
+                    pack_version=pack_version,
+                )
+                .returning(self.t["tax_contexts"])
+            )
+            .mappings()
+            .first()
+        )
+        return _row(row)
+
+    def get_tax_context(self, context_id: str, tenant_id: str) -> dict | None:
+        row = (
+            self.conn.execute(
+                select(self.t["tax_contexts"])
+                .where(self.t["tax_contexts"].c.id == context_id)
+                .where(self.t["tax_contexts"].c.tenant_id == tenant_id)
+            )
+            .mappings()
+            .first()
+        )
+        return _row(row) if row else None
+
+    def get_tax_context_for_update(self, context_id: str, tenant_id: str) -> dict | None:
+        """Lock the context row (FOR UPDATE) and return the LIVE row.
+
+        Callers must re-read after acquiring the lock: concurrent transitions
+        serialize here, and the winner's commit is visible to the loser."""
+        row = (
+            self.conn.execute(
+                select(self.t["tax_contexts"])
+                .where(self.t["tax_contexts"].c.id == context_id)
+                .where(self.t["tax_contexts"].c.tenant_id == tenant_id)
+                .with_for_update()
+            )
+            .mappings()
+            .first()
+        )
+        return _row(row) if row else None
+
+    def list_tax_contexts(
+        self,
+        tenant_id: str,
+        client_id: str | None = None,
+        status: str | None = None,
+    ) -> list[dict]:
+        query = select(self.t["tax_contexts"]).where(self.t["tax_contexts"].c.tenant_id == tenant_id)
+        if client_id is not None:
+            query = query.where(self.t["tax_contexts"].c.client_id == client_id)
+        if status is not None and status != "all":
+            query = query.where(self.t["tax_contexts"].c.confirmation_status == status)
+        rows = self.conn.execute(query.order_by(self.t["tax_contexts"].c.created_at)).mappings().all()
+        return [_row(r) for r in rows]
+
+    def update_tax_context(
+        self, context_id: str, tenant_id: str, expect_status: str | None = None, **fields: Any
+    ) -> dict | None:
+        """Conditional update: with expect_status, the write applies only when the
+        live row still holds that status (lost races return None instead of
+        overwriting a concurrent transition)."""
+        stmt = (
+            update(self.t["tax_contexts"])
+            .where(self.t["tax_contexts"].c.id == context_id)
+            .where(self.t["tax_contexts"].c.tenant_id == tenant_id)
+        )
+        if expect_status is not None:
+            stmt = stmt.where(self.t["tax_contexts"].c.confirmation_status == expect_status)
+        row = self.conn.execute(stmt.values(**fields).returning(self.t["tax_contexts"])).mappings().first()
+        return _row(row) if row else None
+
+    # -- jurisdiction: obligations + registrations (reads; PR-B creates none) ---
+    def get_obligation(self, obligation_id: str, tenant_id: str) -> dict | None:
+        row = (
+            self.conn.execute(
+                select(self.t["tax_obligation_profiles"])
+                .where(self.t["tax_obligation_profiles"].c.id == obligation_id)
+                .where(self.t["tax_obligation_profiles"].c.tenant_id == tenant_id)
+            )
+            .mappings()
+            .first()
+        )
+        return _row(row) if row else None
+
+    _REGISTRATION_MASK = (
+        "id",
+        "obligation_profile_id",
+        "authority_code",
+        "registration_kind",
+        "number_last4",
+        "status",
+        "starts_on",
+        "ends_on",
+    )
+
+    def _masked_registration(self, row: Any) -> dict:
+        data = _row(row)
+        return {k: data.get(k) for k in self._REGISTRATION_MASK}
+
+    def list_registrations_masked(
+        self, tenant_id: str, obligation_profile_id: str | None = None
+    ) -> list[dict]:
+        """Masked reads select ONLY safe columns: ciphertext, nonce, and key
+        metadata never leave PostgreSQL on read paths (PR-B §5)."""
+        table = self.t["tax_registrations"]
+        query = select(*(table.c[k] for k in self._REGISTRATION_MASK)).where(table.c.tenant_id == tenant_id)
+        if obligation_profile_id is not None:
+            query = query.where(table.c.obligation_profile_id == obligation_profile_id)
+        return [self._masked_registration(r) for r in self.conn.execute(query).mappings().all()]
+
+    def get_registration_masked(self, registration_id: str, tenant_id: str) -> dict | None:
+        table = self.t["tax_registrations"]
+        row = (
+            self.conn.execute(
+                select(*(table.c[k] for k in self._REGISTRATION_MASK))
+                .where(table.c.id == registration_id)
+                .where(table.c.tenant_id == tenant_id)
+            )
+            .mappings()
+            .first()
+        )
+        return self._masked_registration(row) if row else None
+
+    # -- jurisdiction: catalog (read-only availability contract, PR-B §6) --------
+    def list_jurisdictions(self) -> list[dict]:
+        rows = (
+            self.conn.execute(
+                select(self.t["jurisdiction_catalog"]).order_by(self.t["jurisdiction_catalog"].c.code)
+            )
+            .mappings()
+            .all()
+        )
+        return [_row(r) for r in rows]
 
     # -- audit ------------------------------------------------------------------
     def audit(

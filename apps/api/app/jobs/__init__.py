@@ -12,6 +12,7 @@ from app.jobs.durable import (
     fingerprint_payload,
     new_worker_id,
     serve,
+    serve_outbox,
     session,
 )
 
@@ -27,5 +28,6 @@ __all__ = [
     "fingerprint_payload",
     "new_worker_id",
     "serve",
+    "serve_outbox",
     "session",
 ]

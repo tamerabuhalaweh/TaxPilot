@@ -21,7 +21,6 @@ import contextlib
 import hashlib
 import json
 import logging
-import re
 import secrets
 import threading
 import time
@@ -484,12 +483,14 @@ class DurableJobs:
 
     def outbox_ack(
         self, event_id: str, owner: str, fencing_token: str, ok: bool, error: str | None = None
-    ) -> bool:
-        """Fenced ack: only the current fenced owner of a PENDING row transitions.
+    ) -> str | None:
+        """Fenced ack returning the new status, or None when rejected as stale.
 
-        Failures back off to FAILED at max attempts; success publishes once.
+        Failures spend one attempt (backoff, then FAILED at max); only the
+        current fenced owner of a live lease transitions the row.
         """
-        return (
+        del error  # reserved for future bounded codes; never persisted raw (see _safe_diagnostic)
+        row = (
             self.conn.execute(
                 text(
                     "UPDATE job_outbox SET "
@@ -502,35 +503,44 @@ class DurableJobs:
                     "published_at = CASE WHEN :ok THEN clock_timestamp() ELSE published_at END, "
                     "lease_owner = '', fencing_token = '', lease_expires_at = NULL "
                     "WHERE id = :id AND status = 'PENDING' AND lease_owner = :owner "
-                    "AND fencing_token = :token AND lease_expires_at > clock_timestamp()"
+                    "AND fencing_token = :token AND lease_expires_at > clock_timestamp() "
+                    "RETURNING status"
                 ),
                 {"id": event_id, "owner": owner, "token": fencing_token, "ok": ok},
-            ).rowcount
-            == 1
+            )
+            .mappings()
+            .first()
         )
+        return row["status"] if row else None
 
-    def outbox_sweep(self, tenant_id: str | None = None, batch: int = 100) -> list[str]:
-        """Release expired publisher leases back to PENDING (no attempt spent).
+    def outbox_sweep(self, tenant_id: str | None = None, batch: int = 100) -> list[dict[str, str]]:
+        """Recover expired publisher leases, spending one attempt each.
 
-        Concurrent sweepers serialize on row locks: each lease released once.
+        A publisher that repeatedly dies before acking therefore exhausts its
+        budget and terminates FAILED instead of redelivering forever: crash
+        recovery is bounded like handler retries. Concurrent sweepers serialize
+        on row locks (SKIP LOCKED): each lease released exactly once.
         """
         rows = (
             self.conn.execute(
                 text(
-                    "UPDATE job_outbox SET lease_owner = '', fencing_token = '', "
-                    "lease_expires_at = NULL, next_attempt_at = clock_timestamp() "
+                    "UPDATE job_outbox SET attempts = attempts + 1, "
+                    "status = CASE WHEN attempts + 1 >= max_attempts THEN 'FAILED' ELSE 'PENDING' END, "
+                    "lease_owner = '', fencing_token = '', lease_expires_at = NULL, "
+                    "next_attempt_at = CASE WHEN attempts + 1 >= max_attempts THEN next_attempt_at "
+                    "ELSE clock_timestamp() END "
                     "WHERE id IN (SELECT id FROM job_outbox WHERE status = 'PENDING' "
                     "AND lease_expires_at IS NOT NULL AND lease_expires_at <= clock_timestamp() "
                     "AND (CAST(:tenant AS UUID) IS NULL OR tenant_id = CAST(:tenant AS UUID)) "
                     "ORDER BY lease_expires_at LIMIT :batch FOR UPDATE SKIP LOCKED) "
-                    "RETURNING id"
+                    "RETURNING id, status"
                 ),
                 {"tenant": tenant_id, "batch": batch},
             )
             .mappings()
             .all()
         )
-        return [str(r["id"]) for r in rows]
+        return [{"id": str(r["id"]), "status": r["status"]} for r in rows]
 
     # -- observability (metadata only: counts + ages, never payloads/hashes) --
     def metrics(self, tenant_id: str | None = None) -> dict[str, Any]:
@@ -718,15 +728,23 @@ def serve(
     return stats
 
 
-def _safe_diagnostic(exc: Exception) -> tuple[str | None, str | None]:
-    """Bound handler-fault diagnostics: class name + first 500 chars, one line.
+def _safe_diagnostic(exc: Exception) -> tuple[str, str]:
+    """Classify a handler fault without persisting any of its text.
 
-    Persistent job rows must never absorb unbounded arbitrary exception text
-    (future handlers process untrusted content; faults could embed it). Control
-    characters become spaces so diagnostics cannot smuggle log lines either.
+    Returns (stored_message, error_class) where stored_message is a fixed
+    allowlist code plus an opaque correlation ref, e.g.
+    ``HANDLER_RETRYABLE ref=9f3a4c1d8e2b407f``. Raw ``str(exc)`` — which for
+    future document-processing handlers could embed invoice values, paths, or
+    credentials at ANY position — never reaches rows or logs; the class name
+    (a code identifier, not content) is the only handler-derived string kept.
     """
-    text = re.sub(r"[\x00-\x1f\x7f]+", " ", str(exc))[:500]
-    return (f"{type(exc).__name__}: {text}".strip(), type(exc).__name__)
+    if isinstance(exc, TerminalError):
+        code = "HANDLER_TERMINAL"
+    elif isinstance(exc, RetryableError):
+        code = "HANDLER_RETRYABLE"
+    else:
+        code = "HANDLER_UNEXPECTED"
+    return f"{code} ref={secrets.token_hex(8)}", type(exc).__name__
 
 
 def _settle(
@@ -745,12 +763,101 @@ def _settle(
             if new_status is None:
                 log.warning("durable stale settlement rejected (job=%s)", job_id)
                 return "stale"
+            if message is not None:
+                log.info("durable settled job=%s outcome=%s %s", job_id, new_status, message)
             return "failed" if new_status == "DEAD" else "retried"
         dao.commit()
     if not applied:
         log.warning("durable stale settlement rejected (job=%s)", job_id)
         return "stale"
+    if message is not None:  # code + opaque ref only; never handler text
+        log.info("durable settled job=%s outcome=%s %s", job_id, outcome, message)
     return {"ok": "completed", "fail": "failed", "retry": "retried"}[outcome]
+
+
+def serve_outbox(
+    factory: Callable[[], Any],
+    publish: Callable[[dict[str, Any]], None],
+    *,
+    publisher_id: str | None = None,
+    tenant_id: str | None = None,
+    lease_ttl: float = 60.0,
+    poll_interval: float = 1.0,
+    sweep_interval: float = 10.0,
+    claim_batch: int = 10,
+    stop_after_events: int | None = None,
+    idle_timeout: float | None = None,
+    deadline_seconds: float | None = None,
+) -> dict[str, int]:
+    """Minimal provider-independent publisher loop (at-least-once delivery).
+
+    Claims a fenced batch, publishes each event, acks success terminally and
+    failures against the attempt budget; sweeps expired leases periodically.
+    Downstream effects MUST be idempotent per event id: a crashed publisher's
+    redelivery is expected, not exceptional. Returns observable stats.
+    """
+    pid = publisher_id or new_worker_id()
+    stats = {"published": 0, "failed": 0, "stale": 0, "swept": 0, "sweep_runs": 0}
+    last_sweep = 0.0
+    idle_since: float | None = None
+    started_at = time.time()
+
+    def sweep() -> None:
+        try:
+            with factory() as dao:
+                moved = dao.outbox_sweep(tenant_id)
+                dao.commit()
+            stats["swept"] += len(moved)
+        except Exception:
+            log.exception("outbox sweep failed publisher=%s", pid)
+
+    sweep()
+    stats["sweep_runs"] += 1
+    while True:
+        now = time.time()
+        if now - last_sweep >= sweep_interval:
+            last_sweep = now
+            sweep()
+            stats["sweep_runs"] += 1
+        with factory() as dao:
+            batch = dao.outbox_claim(tenant_id, pid, lease_ttl, claim_batch)
+            dao.commit()
+        if not batch:
+            time.sleep(poll_interval)
+            idle_since = idle_since or now
+            if idle_timeout is not None and now - idle_since >= idle_timeout:
+                break
+            if deadline_seconds is not None and now - started_at >= deadline_seconds:
+                break
+            continue
+        idle_since = None
+        for event in batch:
+            event_id = str(event["id"])
+            try:
+                publish(event)
+            except Exception as exc:
+                message, _class = _safe_diagnostic(exc)
+                log.info("outbox publish failed event=%s %s", event_id, message)
+                with factory() as dao:
+                    applied = dao.outbox_ack(event_id, pid, str(event["fencing_token"]), False)
+                    dao.commit()
+            else:
+                with factory() as dao:
+                    applied = dao.outbox_ack(event_id, pid, str(event["fencing_token"]), True)
+                    dao.commit()
+            if applied is None:
+                log.warning("outbox stale ack rejected (event=%s)", event_id)
+                stats["stale"] += 1
+            elif applied == "PUBLISHED":
+                stats["published"] += 1
+            elif applied == "FAILED":
+                stats["failed"] += 1
+        done = stats["published"] + stats["failed"] + stats["stale"]
+        if stop_after_events is not None and done >= stop_after_events:
+            break
+        if deadline_seconds is not None and time.time() - started_at >= deadline_seconds:
+            break
+    return stats
 
 
 @contextlib.contextmanager

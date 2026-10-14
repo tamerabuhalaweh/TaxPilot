@@ -14,12 +14,14 @@
   handler failing on its last allowed attempt goes DEAD immediately in
   `fail_transient` — retries can never outlive `max_attempts`, heartbeats or not.
 - Outbox publishers claim with fencing tokens (`outbox_claim` assigns owner +
-  token + lease); crashed publishers are released by `outbox_sweep` with a
-  FRESH token, so stale acks are rejected and each event publishes once.
-- Sweeper runs inside every worker (opening + periodic): expired leases
-  requeue below max attempts, go DEAD above it. No operator action needed.
-- Handler fault text stored in job diagnostics is bounded (500 chars, single
-  line): unbounded exception content never persists.
+  token + lease); `serve_outbox()` publishes, acks, and sweeps. Every sweep
+  recovery and every failed ack spends one attempt: repeated publisher crashes
+  terminate FAILED instead of redelivering forever. Delivery is at-least-once —
+  downstream effects MUST be idempotent per event id (publish-once is never
+  claimed; exactly-once even less so).
+- Handler fault text never persists: diagnostics store an allowlisted code
+  (`HANDLER_RETRYABLE` / `HANDLER_TERMINAL` / `HANDLER_UNEXPECTED`) plus an
+  opaque correlation ref; logs carry code + ref only.
 
 ## Symptoms → actions
 
@@ -28,7 +30,7 @@
 | `jobs.QUEUED.oldest_seconds` growing, `RUNNING` flat | No worker claiming (fleet down or wakeup loss) | Start/check workers; wakeups are advisory — sweeper + poll recover without Redis fixes |
 | `RUNNING` stuck past lease TTL | Crashed workers | Nothing: sweeper requeues automatically; verify `recovered` counter moves |
 | `DEAD` rising | Poison jobs exhausting attempts | Inspect `terminal_error`/`last_error`; fix handler or payload; re-enqueue via new idempotency key (history immutable) |
-| `outbox PENDING` backlog growing | Publisher down/slow | Check publisher; events replay idempotently by `(tenant, event_key)` |
+| `outbox PENDING` backlog growing | Publisher down/slow | Check publisher; events replay idempotently by `(tenant, job, event_key)` |
 | `stale` settlements rising | Over-tenancy of leases (TTL too short for handler) | Raise lease TTL; check heartbeat errors in logs |
 | Redis `PING` failing | Wakeup bus down | Nothing urgent: PG polling covers; restore Redis, no job action needed |
 

@@ -475,33 +475,43 @@ def test_duplicate_delivery_single_committed_effect():
     assert _effect_runs(table) == {row["id"]: 1}  # effect ran twice, committed once
 
 
-def test_diagnostic_text_bounded_to_single_line():
+def test_diagnostics_carry_no_exception_text(caplog):  # type: ignore[no-untyped-def]
+    import logging
+    import re
+
     tenant, client = _scope("diag")
     row = _enqueue(tenant, client, _key("diag"), max_attempts=1)
-    secret_tail = f"TAIL-{uuid.uuid4().hex}"
-    payload = "line1\nline2\r\n" + "X" * 5000 + "\n" + secret_tail
+    head_secret = f"HEAD-{uuid.uuid4().hex}"
+    tail_secret = f"TAIL-{uuid.uuid4().hex}"
+    payload = head_secret + "\nmultiline\n" + "X" * 5000 + "\n" + tail_secret
 
     def nasty(job: dict) -> None:
         raise RuntimeError(payload)
 
-    serve(
-        _factory,
-        nasty,
-        tenant_id=tenant,
-        lease_ttl=30.0,
-        idle_timeout=5.0,
-        deadline_seconds=30.0,
-        sweep_interval=60.0,
-    )
+    with caplog.at_level(logging.INFO, logger="app.jobs.durable"):
+        serve(
+            _factory,
+            nasty,
+            tenant_id=tenant,
+            lease_ttl=30.0,
+            idle_timeout=5.0,
+            deadline_seconds=30.0,
+            sweep_interval=60.0,
+        )
     with _factory() as dao:
         final = dao.get(row["id"], tenant)
         dao.commit()
     assert final["status"] == "DEAD"  # single attempt spent terminally
     stored = final["last_error"] or ""
-    assert len(stored) <= 520
-    assert "\n" not in stored and "\r" not in stored  # no smuggled log lines
-    assert secret_tail not in stored  # unbounded tail never persisted
-    assert stored.startswith("RuntimeError: line1 line2 XX")
+    assert re.fullmatch(r"HANDLER_UNEXPECTED ref=[0-9a-f]{16}", stored), stored
+    assert head_secret not in stored and tail_secret not in stored
+    assert "X" * 100 not in stored  # unbounded body never persisted
+    assert final["last_error_class"] == "RuntimeError"  # safe class name only
+    assert final["terminal_error_class"] == "MaxAttemptsExhausted"  # exhaustion marker
+    log_text = caplog.text
+    assert head_secret not in log_text and tail_secret not in log_text
+    assert payload not in log_text  # operational logs carry code + ref, never text
+    assert "HANDLER_UNEXPECTED ref=" in log_text  # row and log join on the ref
 
 
 def test_retry_then_success_records_backoff_and_attempts():
@@ -533,7 +543,7 @@ def test_retry_then_success_records_backoff_and_attempts():
     with _factory() as dao:
         final = dao.get(row["id"], tenant)
         assert final["status"] == "SUCCEEDED" and final["attempts"] == 2
-        assert "wobble" in (final["last_error"] or "")
+        assert final["last_error"].startswith("HANDLER_RETRYABLE ref=")
         dao.commit()
 
 
@@ -743,17 +753,17 @@ def test_outbox_atomic_publish_claim_ack_lifecycle():
         )
         assert (
             dao.outbox_ack(event["id"], "publisher-a", tokens[event["id"]], True)
-            is True
+            == "PUBLISHED"
         )
         assert (
             dao.outbox_ack(event["id"], "publisher-a", tokens[event["id"]], True)
-            is False
+            is None
         )  # already published: fenced
         assert (
             dao.outbox_ack(
                 first_publish["id"], "publisher-a", tokens[first_publish["id"]], True
             )
-            is True
+            == "PUBLISHED"
         )
         dao.commit()
     with _factory() as dao:  # all published: nothing claimable
@@ -809,6 +819,35 @@ def _make_job_due(job_id: str) -> None:
         conn.commit()
 
 
+def test_outbox_nack_backs_off_before_due():
+    tenant, client = _scope("obnack")
+    row = _enqueue(tenant, client, _key("obn"))
+    with _factory() as dao:
+        event = dao.outbox_publish(
+            tenant, row["id"], _key("obnev"), "t", {}, max_attempts=5
+        )
+        dao.commit()
+    with _factory() as dao:
+        claimed = dao.outbox_claim(tenant, "publisher-n", 60.0)
+        assert len(claimed) == 1
+        assert (
+            dao.outbox_ack(
+                event["id"], "publisher-n", claimed[0]["fencing_token"], False
+            )
+            == "PENDING"
+        )
+        dao.commit()
+    with _factory() as dao:  # backed off: not due until forced
+        assert dao.outbox_claim(tenant, "publisher-n", 60.0) == []
+        dao.commit()
+    _make_due(event["id"])
+    with _factory() as dao:
+        assert [e["id"] for e in dao.outbox_claim(tenant, "publisher-n", 60.0)] == [
+            event["id"]
+        ]
+        dao.commit()
+
+
 def test_outbox_backoff_and_dead_and_cross_tenant():
     tenant, client = _scope("obfail")
     row = _enqueue(tenant, client, _key("obf"))
@@ -817,24 +856,32 @@ def test_outbox_backoff_and_dead_and_cross_tenant():
             tenant, row["id"], _key("obev"), "t", {}, max_attempts=2
         )
         dao.commit()
-    for _ in range(2):
+    for round_no in range(2):  # publisher crashes twice holding the lease (no ack)
         with _factory() as dao:
             claimed = dao.outbox_claim(tenant, "publisher-f", 60.0)
             assert len(claimed) == 1
-            token = claimed[0]["fencing_token"]
-            assert (
-                dao.outbox_ack(
-                    event["id"], "publisher-f", token, False, "downstream down"
-                )
-                is True
-            )
+            dao.commit()
+        _expire_outbox_lease(event["id"])
+        with _factory() as dao:  # sweep spends one attempt per crashed recovery
+            swept = dao.outbox_sweep(tenant)
+            # First crash requeues PENDING; the second exhausts max_attempts=2.
+            assert [(s["id"], s["status"]) for s in swept] == [
+                (event["id"], "PENDING" if round_no == 0 else "FAILED")
+            ]
             dao.commit()
         _make_due(event["id"])  # backoff is real: force due deterministically
+    # Two crashed attempts exhaust max_attempts=2: terminal FAILED, unclaimable.
     with _factory() as dao:
+        assert dao.outbox_sweep(tenant) == []
         assert dao.outbox_claim(tenant, "publisher-f", 60.0) == []
         other_tenant, _other_client = _scope("obother")
         assert dao.outbox_claim(other_tenant, "publisher-f", 60.0) == []
         dao.commit()
+    with psycopg.connect(_to_libpq(_destructive_or_skip()), connect_timeout=5) as conn:
+        status = conn.execute(
+            "SELECT status, attempts FROM job_outbox WHERE id = %s", (event["id"],)
+        ).fetchone()
+        assert (status[0], status[1]) == ("FAILED", 2)
 
 
 def test_outbox_survives_redis_loss():
@@ -888,10 +935,11 @@ def test_outbox_crash_recovery_releases_lease_with_new_token():
         dao.commit()
     _expire_outbox_lease(event["id"])
     with _factory() as dao:  # stale ack from the dead owner is rejected
-        assert dao.outbox_ack(event["id"], "publisher-dead", old_token, True) is False
+        assert dao.outbox_ack(event["id"], "publisher-dead", old_token, True) is None
         dao.commit()
-    with _factory() as dao:  # sweeper releases the expired lease (no attempt spent)
-        assert dao.outbox_sweep(tenant) == [event["id"]]
+    with _factory() as dao:  # sweeper releases the expired lease (one attempt spent)
+        swept = dao.outbox_sweep(tenant)
+        assert [(s["id"], s["status"]) for s in swept] == [(event["id"], "PENDING")]
         dao.commit()
     with _factory() as dao:  # publisher B claims with a fresh fencing token
         reclaimed = dao.outbox_claim(tenant, "publisher-b", 60.0)
@@ -900,8 +948,55 @@ def test_outbox_crash_recovery_releases_lease_with_new_token():
             dao.outbox_ack(
                 event["id"], "publisher-b", reclaimed[0]["fencing_token"], True
             )
-            is True
+            == "PUBLISHED"
         )
+        dao.commit()
+
+
+def test_outbox_takeover_publishes_exactly_once_downstream():
+    from app.jobs import serve_outbox
+
+    table = "ep04c1_effects_ob"
+    _effect_table(table)
+    tenant, client = _scope("obtake")
+    row = _enqueue(tenant, client, _key("obt"))
+    with _factory() as dao:
+        event = dao.outbox_publish(tenant, row["id"], _key("obtev"), "t", {})
+        dao.commit()
+
+    def receive(effect_event: dict) -> None:
+        with psycopg.connect(
+            _to_libpq(_destructive_or_skip()), connect_timeout=5
+        ) as conn:
+            conn.execute(
+                f"INSERT INTO {table} (job_id, runs) VALUES (%s, 1) "
+                "ON CONFLICT (job_id) DO NOTHING",
+                (effect_event["id"],),
+            )
+            conn.commit()
+
+    with _factory() as dao:  # publisher A claims, then dies before ack
+        first = dao.outbox_claim(tenant, "publisher-gone", 60.0)
+        assert len(first) == 1
+        dead_token = first[0]["fencing_token"]
+        dao.commit()
+    _expire_outbox_lease(event["id"])
+    stats = serve_outbox(
+        _factory,
+        receive,
+        publisher_id="publisher-b",
+        tenant_id=tenant,
+        lease_ttl=60.0,
+        idle_timeout=5.0,
+        deadline_seconds=30.0,
+        sweep_interval=60.0,
+    )
+    assert stats["published"] == 1
+    assert _effect_runs(table) == {
+        event["id"]: 1
+    }  # delivered twice at most, effected once
+    with _factory() as dao:  # stale A ack stays rejected after takeover
+        assert dao.outbox_ack(event["id"], "publisher-gone", dead_token, True) is None
         dao.commit()
 
 

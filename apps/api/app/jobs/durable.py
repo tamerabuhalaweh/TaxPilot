@@ -21,6 +21,7 @@ import contextlib
 import hashlib
 import json
 import logging
+import re
 import secrets
 import threading
 import time
@@ -43,7 +44,11 @@ _MAX_PAYLOAD_CHARS = 60000
 
 
 class JobConflictError(ValueError):
-    """Same tenant+idempotency key already holds different payload identity."""
+    """Same tenant+client+operation+key already holds different payload identity."""
+
+
+class OutboxConflictError(ValueError):
+    """Same tenant+job+event key already holds a different event payload/type."""
 
 
 class RetryableError(Exception):
@@ -107,12 +112,13 @@ class DurableJobs:
         payload: dict[str, Any],
         max_attempts: int = 5,
     ) -> dict[str, Any]:
-        """Insert a job, or return the identical existing one (tenant-scoped).
+        """Insert a job, or return the identical existing one (scope-bound).
 
-        Same key + same payload hash: idempotent replay, same logical job.
-        Same key + different hash: JobConflictError, never silent overwrite.
-        Concurrent duplicates serialize on UNIQUE(tenant_id, idempotency_key):
-        the loser re-reads inside a savepoint and converges on the winner.
+        Scope is (tenant, client, operation, key): the same key in another
+        scope is an independent job. Same scope + same payload hash: idempotent
+        replay, same logical job. Same scope + different hash: JobConflictError,
+        never silent overwrite. Concurrent duplicates serialize on the scoped
+        UNIQUE index: the loser re-reads inside a savepoint and converges.
         """
         if not operation or len(operation) > 64:
             raise ValueError("operation must be 1-64 chars")
@@ -122,10 +128,14 @@ class DurableJobs:
             raise ValueError("max_attempts must be >= 1")
         payload_hash = fingerprint_payload(payload)
         table = self.t["extraction_jobs"]
+        scope = {"tenant": tenant_id, "client": client_id, "operation": operation, "key": idempotency_key}
         existing = (
             self.conn.execute(
-                text("SELECT * FROM extraction_jobs " "WHERE tenant_id = :tenant AND idempotency_key = :key"),
-                {"tenant": tenant_id, "key": idempotency_key},
+                text(
+                    "SELECT * FROM extraction_jobs WHERE tenant_id = :tenant "
+                    "AND client_id = :client AND operation = :operation AND idempotency_key = :key"
+                ),
+                scope,
             )
             .mappings()
             .first()
@@ -165,10 +175,11 @@ class DurableJobs:
             existing = (
                 self.conn.execute(
                     text(
-                        "SELECT * FROM extraction_jobs "
-                        "WHERE tenant_id = :tenant AND idempotency_key = :key"
+                        "SELECT * FROM extraction_jobs WHERE tenant_id = :tenant "
+                        "AND client_id = :client AND operation = :operation "
+                        "AND idempotency_key = :key"
                     ),
-                    {"tenant": tenant_id, "key": idempotency_key},
+                    scope,
                 )
                 .mappings()
                 .first()
@@ -267,19 +278,33 @@ class DurableJobs:
 
     def fail_transient(
         self, job_id: str, worker_id: str, fencing_token: str, error: str, error_class: str
-    ) -> bool:
-        """Requeue with exponential backoff (cap 1h). Attempts were spent at claim."""
-        return (
+    ) -> str | None:
+        """Requeue with exponential backoff (cap 1h), or terminal DEAD at max.
+
+        Attempts were spent at claim, so a handler failing on its last allowed
+        attempt exhausts HERE — retries cannot outlive max_attempts even with
+        heartbeats holding the lease forever. Returns the new status
+        ('QUEUED' | 'DEAD'), or None when the claim is stale/superseded.
+        """
+        row = (
             self.conn.execute(
                 text(
-                    "UPDATE extraction_jobs SET status = 'QUEUED', "
+                    "UPDATE extraction_jobs SET "
+                    "status = CASE WHEN attempts >= max_attempts THEN 'DEAD' ELSE 'QUEUED' END, "
                     "last_error = :error, last_error_class = :error_class, "
-                    "not_before = clock_timestamp() + "
-                    "make_interval(secs => LEAST(power(2, attempts), 3600)::double precision), "
+                    "terminal_error = CASE WHEN attempts >= max_attempts "
+                    "THEN 'attempts exhausted after ' || attempts || ' attempt(s)' "
+                    "ELSE terminal_error END, "
+                    "terminal_error_class = CASE WHEN attempts >= max_attempts "
+                    "THEN 'MaxAttemptsExhausted' ELSE terminal_error_class END, "
+                    "not_before = CASE WHEN attempts >= max_attempts THEN not_before "
+                    "ELSE clock_timestamp() + "
+                    "make_interval(secs => LEAST(power(2, attempts), 3600)::double precision) END, "
                     "lease_owner = '', fencing_token = '', lease_expires_at = NULL, "
                     "updated_at = clock_timestamp() "
                     "WHERE id = :id AND status = 'RUNNING' AND lease_owner = :owner "
-                    "AND fencing_token = :token AND lease_expires_at > clock_timestamp()"
+                    "AND fencing_token = :token AND lease_expires_at > clock_timestamp() "
+                    "RETURNING status"
                 ),
                 {
                     "id": job_id,
@@ -288,9 +313,11 @@ class DurableJobs:
                     "error": error,
                     "error_class": error_class,
                 },
-            ).rowcount
-            == 1
+            )
+            .mappings()
+            .first()
         )
+        return row["status"] if row else None
 
     def recover_stale(self, tenant_id: str | None = None, batch: int = 100) -> list[dict[str, str]]:
         """Requeue expired RUNNING leases; exhaust attempts to DEAD. Atomic batch.
@@ -349,9 +376,19 @@ class DurableJobs:
         payload: dict[str, Any],
         max_attempts: int = 10,
     ) -> dict[str, Any]:
-        """Idempotent event insert (same tenant+key converges). Same transaction
-        as job creation when called before the caller's commit: no lost events."""
+        """Idempotent event insert scoped to (tenant, job, key).
+
+        Same scope + same event identity: converge on the existing row.
+        Same scope + different identity (type or payload): OutboxConflictError,
+        never silent convergence. Same transaction as job creation when called
+        before the caller's commit: no lost events.
+        """
         fingerprint_payload(payload)  # validate shape/size early
+        if not event_key or len(event_key) > 128:
+            raise ValueError("event_key must be 1-128 chars")
+        if not event_type or len(event_type) > 64:
+            raise ValueError("event_type must be 1-64 chars")
+        fingerprint_payload({"type": event_type, "payload": payload})  # validate shape/size
         table = self.t["job_outbox"]
         try:
             with self.conn.begin_nested():
@@ -377,34 +414,81 @@ class DurableJobs:
         except IntegrityError:
             existing = (
                 self.conn.execute(
-                    text("SELECT * FROM job_outbox WHERE tenant_id = :t AND event_key = :k"),
-                    {"t": tenant_id, "k": event_key},
+                    text(
+                        "SELECT * FROM job_outbox WHERE tenant_id = :t AND job_id = :j " "AND event_key = :k"
+                    ),
+                    {"t": tenant_id, "j": job_id, "k": event_key},
                 )
                 .mappings()
                 .first()
             )
             if existing is None:  # pragma: no cover - defensive
                 raise
-            return _row(existing)
+            data = _row(existing)
+            if data["event_type"] != event_type or data["payload"] != payload:
+                raise OutboxConflictError(
+                    f"event key {event_key!r} already holds a different event"
+                ) from None
+            return data
 
-    def outbox_claim(self, tenant_id: str | None, limit: int = 10) -> list[dict[str, Any]]:
+    def outbox_claim(
+        self, tenant_id: str | None, owner: str, lease_ttl_seconds: float, limit: int = 10
+    ) -> list[dict[str, Any]]:
+        """Crash-safe publisher claim: ownership + fencing token assigned atomically.
+
+        A publisher that dies mid-publish holds an expired lease; the sweeper
+        releases it and a new fencing token invalidates the old owner — a late
+        ack from the crashed publisher is rejected, never double-published.
+        """
+        if lease_ttl_seconds <= 0:
+            raise ValueError("lease_ttl_seconds must be positive")
+        token = _mint_token(owner)
         rows = (
             self.conn.execute(
                 text(
-                    "SELECT * FROM job_outbox WHERE status = 'PENDING' "
+                    "UPDATE job_outbox AS o SET lease_owner = :owner, fencing_token = :token, "
+                    "lease_expires_at = clock_timestamp() + make_interval(secs => :ttl) "
+                    "WHERE o.id IN (SELECT id FROM job_outbox WHERE status = 'PENDING' "
                     "AND next_attempt_at <= clock_timestamp() "
                     "AND (CAST(:tenant AS UUID) IS NULL OR tenant_id = CAST(:tenant AS UUID)) "
-                    "ORDER BY created_at, id LIMIT :limit FOR UPDATE SKIP LOCKED"
+                    "ORDER BY created_at, id LIMIT :limit FOR UPDATE SKIP LOCKED) "
+                    "RETURNING o.*"
                 ),
-                {"tenant": tenant_id, "limit": limit},
+                {
+                    "owner": owner,
+                    "token": token,
+                    "ttl": lease_ttl_seconds,
+                    "tenant": tenant_id,
+                    "limit": limit,
+                },
             )
             .mappings()
             .all()
         )
         return [_row(r) for r in rows]
 
-    def outbox_ack(self, event_id: str, ok: bool, error: str | None = None) -> bool:
-        """Fenced ack: only PENDING rows transition; failures back off to FAILED."""
+    def outbox_renew(self, event_id: str, owner: str, fencing_token: str, lease_ttl_seconds: float) -> bool:
+        """Extend a live publisher claim; expired leases are dead."""
+        return (
+            self.conn.execute(
+                text(
+                    "UPDATE job_outbox SET "
+                    "lease_expires_at = clock_timestamp() + make_interval(secs => :ttl) "
+                    "WHERE id = :id AND status = 'PENDING' AND lease_owner = :owner "
+                    "AND fencing_token = :token AND lease_expires_at > clock_timestamp()"
+                ),
+                {"id": event_id, "owner": owner, "token": fencing_token, "ttl": lease_ttl_seconds},
+            ).rowcount
+            == 1
+        )
+
+    def outbox_ack(
+        self, event_id: str, owner: str, fencing_token: str, ok: bool, error: str | None = None
+    ) -> bool:
+        """Fenced ack: only the current fenced owner of a PENDING row transitions.
+
+        Failures back off to FAILED at max attempts; success publishes once.
+        """
         return (
             self.conn.execute(
                 text(
@@ -415,13 +499,38 @@ class DurableJobs:
                     "next_attempt_at = CASE WHEN :ok OR attempts + 1 >= max_attempts THEN next_attempt_at "
                     "ELSE clock_timestamp() + make_interval(secs => "
                     "LEAST(power(2, attempts + 1), 3600)::double precision) END, "
-                    "published_at = CASE WHEN :ok THEN clock_timestamp() ELSE published_at END "
-                    "WHERE id = :id AND status = 'PENDING'"
+                    "published_at = CASE WHEN :ok THEN clock_timestamp() ELSE published_at END, "
+                    "lease_owner = '', fencing_token = '', lease_expires_at = NULL "
+                    "WHERE id = :id AND status = 'PENDING' AND lease_owner = :owner "
+                    "AND fencing_token = :token AND lease_expires_at > clock_timestamp()"
                 ),
-                {"id": event_id, "ok": ok},
+                {"id": event_id, "owner": owner, "token": fencing_token, "ok": ok},
             ).rowcount
             == 1
         )
+
+    def outbox_sweep(self, tenant_id: str | None = None, batch: int = 100) -> list[str]:
+        """Release expired publisher leases back to PENDING (no attempt spent).
+
+        Concurrent sweepers serialize on row locks: each lease released once.
+        """
+        rows = (
+            self.conn.execute(
+                text(
+                    "UPDATE job_outbox SET lease_owner = '', fencing_token = '', "
+                    "lease_expires_at = NULL, next_attempt_at = clock_timestamp() "
+                    "WHERE id IN (SELECT id FROM job_outbox WHERE status = 'PENDING' "
+                    "AND lease_expires_at IS NOT NULL AND lease_expires_at <= clock_timestamp() "
+                    "AND (CAST(:tenant AS UUID) IS NULL OR tenant_id = CAST(:tenant AS UUID)) "
+                    "ORDER BY lease_expires_at LIMIT :batch FOR UPDATE SKIP LOCKED) "
+                    "RETURNING id"
+                ),
+                {"tenant": tenant_id, "batch": batch},
+            )
+            .mappings()
+            .all()
+        )
+        return [str(r["id"]) for r in rows]
 
     # -- observability (metadata only: counts + ages, never payloads/hashes) --
     def metrics(self, tenant_id: str | None = None) -> dict[str, Any]:
@@ -609,18 +718,34 @@ def serve(
     return stats
 
 
+def _safe_diagnostic(exc: Exception) -> tuple[str | None, str | None]:
+    """Bound handler-fault diagnostics: class name + first 500 chars, one line.
+
+    Persistent job rows must never absorb unbounded arbitrary exception text
+    (future handlers process untrusted content; faults could embed it). Control
+    characters become spaces so diagnostics cannot smuggle log lines either.
+    """
+    text = re.sub(r"[\x00-\x1f\x7f]+", " ", str(exc))[:500]
+    return (f"{type(exc).__name__}: {text}".strip(), type(exc).__name__)
+
+
 def _settle(
     factory: Callable[[], Any], job_id: str, worker_id: str, token: str, outcome: str, exc: Exception | None
 ) -> str:
-    message = f"{type(exc).__name__}: {exc}" if exc else None
-    error_class = type(exc).__name__ if exc else None
+    message, error_class = _safe_diagnostic(exc) if exc else (None, None)
     with factory() as dao:
         if outcome == "ok":
-            applied = dao.finish(job_id, worker_id, token, True)
+            applied: bool | str | None = dao.finish(job_id, worker_id, token, True)
         elif outcome == "fail":
             applied = dao.finish(job_id, worker_id, token, False, message, error_class)
         else:
-            applied = dao.fail_transient(job_id, worker_id, token, message or "", error_class or "")
+            # fail_transient reports its terminal state: retried, or failed at max.
+            new_status = dao.fail_transient(job_id, worker_id, token, message or "", error_class or "")
+            dao.commit()
+            if new_status is None:
+                log.warning("durable stale settlement rejected (job=%s)", job_id)
+                return "stale"
+            return "failed" if new_status == "DEAD" else "retried"
         dao.commit()
     if not applied:
         log.warning("durable stale settlement rejected (job=%s)", job_id)

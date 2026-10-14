@@ -31,7 +31,10 @@ from app.store import assert_schema_matches, tables  # noqa: E402
 from db.migrate import _to_libpq, discover, load_checksums, migrate  # noqa: E402
 
 REQUIRE_SERVICES = os.environ.get("REQUIRE_SERVICES") == "1"
-REDIS_TEST_URL = os.environ.get("TAXPILOT_TEST_REDIS_URL", "redis://localhost:6379/0")
+# Isolated logical database for wakeup tests: FLUSHDB here never touches the
+# shared dev db 0. CI Linux resolves localhost fine; Windows dev may export
+# TAXPILOT_TEST_REDIS_URL with 127.0.0.1 instead (documented IPv6 quirk).
+REDIS_TEST_URL = os.environ.get("TAXPILOT_TEST_REDIS_URL", "redis://localhost:6379/15")
 URL = os.environ.get(
     "DATABASE_URL", "postgresql+psycopg://taxpilot:taxpilot@localhost:5432/taxpilot"
 )
@@ -379,6 +382,62 @@ def test_max_attempts_dead_letter_is_terminal():
         dao.commit()
 
 
+def test_repeated_failures_reach_dead_and_stop_being_claimed():
+    tenant, client = _scope("exhaust")
+    row = _enqueue(tenant, client, _key("exh"), max_attempts=3)
+
+    def always_retry(job: dict) -> None:
+        raise RetryableError("boom")
+
+    stats = serve(
+        _factory,
+        always_retry,
+        tenant_id=tenant,
+        lease_ttl=30.0,
+        idle_timeout=5.0,
+        deadline_seconds=60.0,
+        sweep_interval=60.0,
+    )
+    with _factory() as dao:
+        final = dao.get(row["id"], tenant)
+        dao.commit()
+    assert final["status"] == "DEAD" and final["attempts"] == 3
+    assert final["terminal_error_class"] == "MaxAttemptsExhausted"
+    assert stats["failed"] >= 1
+    with _factory() as dao:  # exhausted jobs are never claimed again
+        assert dao.claim(tenant, "worker-z", 60.0) is None
+        dao.commit()
+
+
+def test_mixed_crash_and_retry_exhaustion():
+    tenant, client = _scope("mixed")
+    row = _enqueue(tenant, client, _key("mix"), max_attempts=3)
+    with _factory() as dao:  # crash 1: abandoned claim, recovered (attempts=1)
+        assert dao.claim(tenant, "worker-gone", 3600.0) is not None
+        dao.commit()
+    _force_expire(row["id"])
+    with _factory() as dao:
+        assert [m["status"] for m in dao.recover_stale(tenant)] == ["QUEUED"]
+        dao.commit()
+
+    def always_retry(job: dict) -> None:
+        raise RetryableError("still broken")
+
+    serve(
+        _factory,
+        always_retry,
+        tenant_id=tenant,
+        lease_ttl=30.0,
+        idle_timeout=5.0,
+        deadline_seconds=60.0,
+        sweep_interval=60.0,
+    )
+    with _factory() as dao:
+        final = dao.get(row["id"], tenant)
+        dao.commit()
+    assert final["status"] == "DEAD" and final["attempts"] == 3  # 1 crash + 2 retries
+
+
 # -- duplicate delivery, single effect ----------------------------------------------
 def test_duplicate_delivery_single_committed_effect():
     table = "ep04c1_effects_dup"
@@ -414,6 +473,35 @@ def test_duplicate_delivery_single_committed_effect():
         dao.commit()
     assert again is not None and again["id"] == row["id"]
     assert _effect_runs(table) == {row["id"]: 1}  # effect ran twice, committed once
+
+
+def test_diagnostic_text_bounded_to_single_line():
+    tenant, client = _scope("diag")
+    row = _enqueue(tenant, client, _key("diag"), max_attempts=1)
+    secret_tail = f"TAIL-{uuid.uuid4().hex}"
+    payload = "line1\nline2\r\n" + "X" * 5000 + "\n" + secret_tail
+
+    def nasty(job: dict) -> None:
+        raise RuntimeError(payload)
+
+    serve(
+        _factory,
+        nasty,
+        tenant_id=tenant,
+        lease_ttl=30.0,
+        idle_timeout=5.0,
+        deadline_seconds=30.0,
+        sweep_interval=60.0,
+    )
+    with _factory() as dao:
+        final = dao.get(row["id"], tenant)
+        dao.commit()
+    assert final["status"] == "DEAD"  # single attempt spent terminally
+    stored = final["last_error"] or ""
+    assert len(stored) <= 520
+    assert "\n" not in stored and "\r" not in stored  # no smuggled log lines
+    assert secret_tail not in stored  # unbounded tail never persisted
+    assert stored.startswith("RuntimeError: line1 line2 XX")
 
 
 def test_retry_then_success_records_backoff_and_attempts():
@@ -503,13 +591,13 @@ def _redis():
 
 def test_redis_flush_and_outage_lose_nothing():
     tenant, client = _scope("rloss")
-    bus = WakeupBus(REDIS_TEST_URL)
+    bus = WakeupBus(REDIS_TEST_URL, key=f"tp:pgwake-{uuid.uuid4().hex}")
     ids = []
     for i in range(3):
         row = _enqueue(tenant, client, _key(f"rloss-{i}"))
         ids.append(row["id"])
         assert bus.notify(row["id"]) is True
-    _redis().flushall()  # total wakeup loss, mid-flight
+    _redis().flushdb()  # total wakeup loss on the ISOLATED test database only
     done: list = []
     stats = serve(
         _factory,
@@ -523,6 +611,16 @@ def test_redis_flush_and_outage_lose_nothing():
     assert stats["completed"] == 3 and sorted(done) == sorted(ids)
     dead = WakeupBus("redis://127.0.0.1:9/0")
     assert dead.notify("x") is False and dead.wait(0.1) is None
+
+
+def test_wakeup_traffic_never_touches_shared_db():
+    from urllib.parse import urlparse
+
+    assert urlparse(REDIS_TEST_URL).path in ("/15", "15")  # isolated test database
+    bus = WakeupBus(REDIS_TEST_URL, key=f"tp:pgwake-{uuid.uuid4().hex}")
+    assert bus.notify("sentinel") is True
+    _redis().flushdb()
+    assert bus.wait(0.5) is None  # loss is observable, harmless, and scoped
 
 
 # -- PG outage + ack ambiguity ------------------------------------------------------------
@@ -566,6 +664,52 @@ def test_cross_tenant_claims_and_keys_isolated():
         dao.commit()
 
 
+def _second_client(tenant_id: str, tag: str) -> str:
+    client_id = str(uuid.uuid4())
+    with psycopg.connect(_to_libpq(_destructive_or_skip()), connect_timeout=5) as conn:
+        conn.execute(
+            "INSERT INTO clients (id, tenant_id, name) VALUES (%s, %s, %s)",
+            (client_id, tenant_id, f"c-{tag}"),
+        )
+        conn.commit()
+    return client_id
+
+
+def test_same_key_across_clients_and_operations_isolated():
+    tenant, client_a = _scope("scope-a")
+    client_b = _second_client(tenant, "scope-b")
+    key = _key("shared")
+    job_a = _enqueue(tenant, client_a, key, {"v": 1})
+    job_b = _enqueue(tenant, client_b, key, {"v": 1})  # same key, other client
+    assert job_b["id"] != job_a["id"]
+    with _factory() as dao:
+        other_op = dao.enqueue(tenant, client_a, "synthetic.other", key, {"v": 1})
+        dao.commit()
+    assert other_op["id"] not in (job_a["id"], job_b["id"])  # same key, other operation
+    with _factory() as dao:  # same full scope still converges
+        assert (
+            dao.enqueue(tenant, client_a, "synthetic.noop", key, {"v": 1})["id"]
+            == job_a["id"]
+        )
+        dao.commit()
+
+
+def test_outbox_event_tenant_bound_to_its_job():
+    from sqlalchemy.exc import IntegrityError
+
+    tenant_a, _client_a = _scope("obiso-a")
+    tenant_b, client_b = _scope("obiso-b")
+    job_a = _enqueue(tenant_a, _client_a, _key("obiso"))
+    with _factory() as dao:
+        with pytest.raises(IntegrityError):  # event tenant must equal job tenant
+            dao.outbox_publish(tenant_b, job_a["id"], _key("evx"), "t", {})
+        dao.rollback()
+        unrelated = _enqueue(tenant_b, client_b, _key("obiso2"))
+        event = dao.outbox_publish(tenant_b, unrelated["id"], _key("evx"), "t", {})
+        dao.commit()
+        assert event["tenant_id"] == tenant_b
+
+
 # -- outbox -------------------------------------------------------------------------------
 def test_outbox_atomic_publish_claim_ack_lifecycle():
     tenant, client = _scope("outbox")
@@ -589,16 +733,56 @@ def test_outbox_atomic_publish_claim_ack_lifecycle():
         assert replay["id"] == first_publish["id"]  # same logical event
         dao.commit()
     with _factory() as dao:
-        claimed = dao.outbox_claim(tenant, limit=10)
+        claimed = dao.outbox_claim(tenant, "publisher-a", 60.0, limit=10)
         assert sorted(e["id"] for e in claimed) == sorted(
             [event["id"], first_publish["id"]]
         )
-        assert dao.outbox_ack(event["id"], True) is True
-        assert dao.outbox_ack(event["id"], True) is False  # already published: fenced
+        assert claimed[0]["fencing_token"]  # ownership fenced per claim
+        assert (
+            dao.outbox_ack(
+                event["id"], "publisher-a", claimed[0]["fencing_token"], True
+            )
+            is True
+        )
+        assert (
+            dao.outbox_ack(
+                event["id"], "publisher-a", claimed[0]["fencing_token"], True
+            )
+            is False
+        )  # already published: fenced
         dao.commit()
     with _factory() as dao:
-        assert [e["id"] for e in dao.outbox_claim(tenant)] == [first_publish["id"]]
+        remaining = dao.outbox_claim(tenant, "publisher-a", 60.0)
+        assert [e["id"] for e in remaining] == [first_publish["id"]]
         dao.commit()
+
+
+def test_outbox_conflicting_reuse_rejected():
+    from app.jobs import OutboxConflictError
+
+    tenant, client = _scope("obconflict")
+    row = _enqueue(tenant, client, _key("obc"))
+    shared_key = _key("shared-ev")
+    with _factory() as dao:
+        dao.outbox_publish(tenant, row["id"], shared_key, "scan.requested", {"v": 1})
+        dao.commit()
+    with _factory() as dao:  # same key, different payload identity
+        with pytest.raises(OutboxConflictError):
+            dao.outbox_publish(
+                tenant, row["id"], shared_key, "scan.requested", {"v": 2}
+            )
+        dao.rollback()
+    with _factory() as dao:  # same key, different event type
+        with pytest.raises(OutboxConflictError):
+            dao.outbox_publish(tenant, row["id"], shared_key, "other.type", {"v": 1})
+        dao.rollback()
+    with _factory() as dao:  # same key on ANOTHER job stays independent
+        other = _enqueue(tenant, client, _key("obc2"))
+        independent = dao.outbox_publish(
+            tenant, other["id"], shared_key, "scan.requested", {"v": 1}
+        )
+        dao.commit()
+        assert independent["job_id"] == other["id"]
 
 
 def _make_due(event_id: str) -> None:
@@ -631,14 +815,21 @@ def test_outbox_backoff_and_dead_and_cross_tenant():
         dao.commit()
     for _ in range(2):
         with _factory() as dao:
-            assert len(dao.outbox_claim(tenant)) == 1
-            assert dao.outbox_ack(event["id"], False, "downstream down") is True
+            claimed = dao.outbox_claim(tenant, "publisher-f", 60.0)
+            assert len(claimed) == 1
+            token = claimed[0]["fencing_token"]
+            assert (
+                dao.outbox_ack(
+                    event["id"], "publisher-f", token, False, "downstream down"
+                )
+                is True
+            )
             dao.commit()
         _make_due(event["id"])  # backoff is real: force due deterministically
     with _factory() as dao:
-        assert dao.outbox_claim(tenant) == []
+        assert dao.outbox_claim(tenant, "publisher-f", 60.0) == []
         other_tenant, _other_client = _scope("obother")
-        assert dao.outbox_claim(other_tenant) == []
+        assert dao.outbox_claim(other_tenant, "publisher-f", 60.0) == []
         dao.commit()
 
 
@@ -648,10 +839,76 @@ def test_outbox_survives_redis_loss():
     with _factory() as dao:
         event = dao.outbox_publish(tenant, row["id"], _key("oblev"), "t", {})
         dao.commit()
-    _redis().flushall()
+    _redis().flushdb()  # isolated test database only; shared dev db 0 untouched
     with _factory() as dao:
-        assert [e["id"] for e in dao.outbox_claim(tenant)] == [event["id"]]
+        assert [e["id"] for e in dao.outbox_claim(tenant, "publisher-o", 60.0)] == [
+            event["id"]
+        ]
         dao.commit()
+
+
+def test_outbox_concurrent_publishers_single_claim():
+    tenant, client = _scope("obrace")
+    row = _enqueue(tenant, client, _key("obr"))
+    with _factory() as dao:
+        event = dao.outbox_publish(tenant, row["id"], _key("obrev"), "t", {})
+        dao.commit()
+    barrier = threading.Barrier(4)
+    winners: list = []
+
+    def publish() -> None:
+        barrier.wait(timeout=10)
+        with _factory() as dao:
+            claimed = dao.outbox_claim(tenant, "publisher-r", 60.0)
+            dao.commit()
+            winners.extend(e["id"] for e in claimed)
+
+    threads = [threading.Thread(target=publish) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=60)
+    assert winners == [event["id"]]  # exactly one publisher owns it
+
+
+def test_outbox_crash_recovery_releases_lease_with_new_token():
+    tenant, client = _scope("obcrash")
+    row = _enqueue(tenant, client, _key("obc"))
+    with _factory() as dao:
+        event = dao.outbox_publish(tenant, row["id"], _key("obcev"), "t", {})
+        dao.commit()
+    with _factory() as dao:  # publisher A claims then dies without ack
+        claimed = dao.outbox_claim(tenant, "publisher-dead", 60.0)
+        assert len(claimed) == 1
+        old_token = claimed[0]["fencing_token"]
+        dao.commit()
+    _expire_outbox_lease(event["id"])
+    with _factory() as dao:  # stale ack from the dead owner is rejected
+        assert dao.outbox_ack(event["id"], "publisher-dead", old_token, True) is False
+        dao.commit()
+    with _factory() as dao:  # sweeper releases the expired lease (no attempt spent)
+        assert dao.outbox_sweep(tenant) == [event["id"]]
+        dao.commit()
+    with _factory() as dao:  # publisher B claims with a fresh fencing token
+        reclaimed = dao.outbox_claim(tenant, "publisher-b", 60.0)
+        assert len(reclaimed) == 1 and reclaimed[0]["fencing_token"] != old_token
+        assert (
+            dao.outbox_ack(
+                event["id"], "publisher-b", reclaimed[0]["fencing_token"], True
+            )
+            is True
+        )
+        dao.commit()
+
+
+def _expire_outbox_lease(event_id: str) -> None:
+    with psycopg.connect(_to_libpq(_destructive_or_skip()), connect_timeout=5) as conn:
+        conn.execute(
+            "UPDATE job_outbox SET lease_expires_at = clock_timestamp() - make_interval(secs => 5) "
+            "WHERE id = %s",
+            (event_id,),
+        )
+        conn.commit()
 
 
 # -- metrics carry no content ---------------------------------------------------------------

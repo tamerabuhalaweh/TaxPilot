@@ -6,12 +6,20 @@
 
 ## Normal operation
 
-- Producers `enqueue()` (idempotent per tenant+key) and `outbox_publish()` in
+- Producers `enqueue()` (idempotent per tenant+client+operation+key) and
+  `outbox_publish()` (idempotent per tenant+job+key, conflicts on reuse) in
   one transaction, then best-effort Redis wakeup (`WakeupBus.notify`).
 - Workers `serve()`: claim (fencing token minted) → heartbeat renews every
-  lease/3 → handler settles (ok / retry with backoff / terminal fail).
+  lease/3 → handler settles (ok / retry with backoff / terminal fail). A
+  handler failing on its last allowed attempt goes DEAD immediately in
+  `fail_transient` — retries can never outlive `max_attempts`, heartbeats or not.
+- Outbox publishers claim with fencing tokens (`outbox_claim` assigns owner +
+  token + lease); crashed publishers are released by `outbox_sweep` with a
+  FRESH token, so stale acks are rejected and each event publishes once.
 - Sweeper runs inside every worker (opening + periodic): expired leases
   requeue below max attempts, go DEAD above it. No operator action needed.
+- Handler fault text stored in job diagnostics is bounded (500 chars, single
+  line): unbounded exception content never persists.
 
 ## Symptoms → actions
 

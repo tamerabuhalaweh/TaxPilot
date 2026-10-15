@@ -136,15 +136,15 @@ def _effect_runs(name: str) -> dict[str, int]:
 
 
 # -- migration ------------------------------------------------------------------
-def test_fresh_install_applies_0001_to_0006_with_checksums():
+def test_fresh_install_applies_all_with_checksums():
     url = _destructive_or_skip()
     with psycopg.connect(_to_libpq(url), connect_timeout=10) as conn:
         conn.execute("DROP SCHEMA public CASCADE")
         conn.execute("CREATE SCHEMA public")
         conn.commit()
     try:
-        assert migrate(url) == ["0001", "0002", "0003", "0004", "0005", "0006"]
-        assert [p.name for p in discover()][-1] == "0006_extraction_jobs.sql"
+        assert migrate(url) == ["0001", "0002", "0003", "0004", "0005", "0006", "0007"]
+        assert [p.name for p in discover()][-1] == "0007_rec_engagements.sql"
         manifest = load_checksums()
         recorded = {
             r[0]: r[1]
@@ -152,7 +152,7 @@ def test_fresh_install_applies_0001_to_0006_with_checksums():
             .execute("SELECT version, sha256 FROM schema_migrations")
             .fetchall()
         }
-        assert set(recorded) == {"0001", "0002", "0003", "0004", "0005", "0006"}
+        assert set(recorded) == {"0001", "0002", "0003", "0004", "0005", "0006", "0007"}
         for version, digest in recorded.items():
             assert manifest[version] == digest, version
         from sqlalchemy import create_engine

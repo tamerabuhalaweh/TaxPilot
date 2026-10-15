@@ -9,7 +9,7 @@ database (tests only — never on production request paths).
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import (
@@ -292,6 +292,63 @@ tax_contexts = Table(
     Column("created_at", DateTime(timezone=True), nullable=False),
 )
 
+# -- REC-SLICE-03 engagement foundation + reconciliation-run boundary (0007) --
+engagements = Table(
+    "engagements",
+    metadata,
+    Column("id", UUID(as_uuid=True), primary_key=True),
+    Column("tenant_id", UUID(as_uuid=True), nullable=False),
+    Column("client_id", UUID(as_uuid=True), nullable=False),
+    Column("review_type", Text, nullable=False),
+    Column("period_start", Date, nullable=False),
+    Column("period_end", Date, nullable=False),
+    Column("status", Text, nullable=False),
+    Column("assignee_user_id", UUID(as_uuid=True)),
+    Column("tax_context_id", UUID(as_uuid=True)),
+    Column("created_by", UUID(as_uuid=True)),
+    Column("revision", Integer, nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+)
+
+engagement_events = Table(
+    "engagement_events",
+    metadata,
+    Column("id", UUID(as_uuid=True), primary_key=True),
+    Column("tenant_id", UUID(as_uuid=True), nullable=False),
+    Column("engagement_id", UUID(as_uuid=True), nullable=False),
+    Column("actor_id", UUID(as_uuid=True)),
+    Column("action", Text, nullable=False),
+    Column("prior_status", Text),
+    Column("new_status", Text),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+)
+
+recon_runs = Table(
+    "recon_runs",
+    metadata,
+    Column("id", UUID(as_uuid=True), primary_key=True),
+    Column("tenant_id", UUID(as_uuid=True), nullable=False),
+    Column("client_id", UUID(as_uuid=True), nullable=False),
+    Column("engagement_id", UUID(as_uuid=True), nullable=False),
+    Column("operation", Text, nullable=False),
+    Column("idempotency_key", Text, nullable=False),
+    Column("payload_hash", Text, nullable=False),
+    Column("sales_dataset_version_id", Text, nullable=False),
+    Column("jofo_dataset_version_id", Text, nullable=False),
+    Column("source_set_fingerprint", Text, nullable=False),
+    Column("rules_version", Text, nullable=False),
+    Column("projection_version", Text, nullable=False),
+    Column("period_start", Date),
+    Column("period_end", Date),
+    Column("jurisdiction_code", Text),
+    Column("status", Text, nullable=False),
+    Column("blocked_reason", Text, nullable=False),
+    Column("blocked_detail", Text),
+    Column("requested_by", UUID(as_uuid=True)),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+)
+
 TABLES: dict[str, Table] = {
     "tenants": tenants,
     "users": users,
@@ -309,6 +366,9 @@ TABLES: dict[str, Table] = {
     "tax_obligation_profiles": obligations,
     "tax_registrations": registrations,
     "tax_contexts": tax_contexts,
+    "engagements": engagements,
+    "engagement_events": engagement_events,
+    "recon_runs": recon_runs,
 }
 
 
@@ -760,6 +820,261 @@ class Store:
             .first()
         )
         return _row(row) if row else None
+
+    # -- engagements (REC-SLICE-03 foundation) ----------------------------------
+    def create_engagement(
+        self,
+        tenant_id: str,
+        client_id: str,
+        review_type: str,
+        period_start: date,
+        period_end: date,
+        assignee_user_id: str | None = None,
+        tax_context_id: str | None = None,
+        created_by: str | None = None,
+    ) -> dict:
+        row = (
+            self.conn.execute(
+                insert(self.t["engagements"])
+                .values(
+                    id=uuid.uuid4(),
+                    tenant_id=tenant_id,
+                    client_id=client_id,
+                    review_type=review_type,
+                    period_start=period_start,
+                    period_end=period_end,
+                    status="DRAFT",
+                    assignee_user_id=assignee_user_id,
+                    tax_context_id=tax_context_id,
+                    created_by=created_by,
+                )
+                .returning(self.t["engagements"])
+            )
+            .mappings()
+            .first()
+        )
+        return _row(row)
+
+    def get_engagement(self, engagement_id: str, tenant_id: str) -> dict | None:
+        row = (
+            self.conn.execute(
+                select(self.t["engagements"])
+                .where(self.t["engagements"].c.id == engagement_id)
+                .where(self.t["engagements"].c.tenant_id == tenant_id)
+            )
+            .mappings()
+            .first()
+        )
+        return _row(row) if row else None
+
+    def list_engagements(
+        self,
+        tenant_id: str,
+        client_id: str | None = None,
+        status: str | None = None,
+    ) -> list[dict]:
+        query = select(self.t["engagements"]).where(self.t["engagements"].c.tenant_id == tenant_id)
+        if client_id is not None:
+            query = query.where(self.t["engagements"].c.client_id == client_id)
+        if status is not None:
+            query = query.where(self.t["engagements"].c.status == status)
+        rows = self.conn.execute(query.order_by(self.t["engagements"].c.created_at)).mappings().all()
+        return [_row(r) for r in rows]
+
+    def find_engagement_duplicate(
+        self,
+        tenant_id: str,
+        client_id: str,
+        period_start: date,
+        period_end: date,
+        review_type: str,
+    ) -> dict | None:
+        row = (
+            self.conn.execute(
+                select(self.t["engagements"])
+                .where(self.t["engagements"].c.tenant_id == tenant_id)
+                .where(self.t["engagements"].c.client_id == client_id)
+                .where(self.t["engagements"].c.period_start == period_start)
+                .where(self.t["engagements"].c.period_end == period_end)
+                .where(self.t["engagements"].c.review_type == review_type)
+            )
+            .mappings()
+            .first()
+        )
+        return _row(row) if row else None
+
+    def update_engagement(self, engagement_id: str, tenant_id: str, **fields: Any) -> dict | None:
+        table = self.t["engagements"]
+        row = (
+            self.conn.execute(
+                update(table)
+                .where(table.c.id == engagement_id)
+                .where(table.c.tenant_id == tenant_id)
+                .values(**fields, revision=table.c.revision + 1, updated_at=utcnow())
+                .returning(table)
+            )
+            .mappings()
+            .first()
+        )
+        return _row(row) if row else None
+
+    def add_engagement_event(
+        self,
+        tenant_id: str,
+        engagement_id: str,
+        actor_id: str | None,
+        action: str,
+        prior_status: str | None = None,
+        new_status: str | None = None,
+    ) -> dict:
+        row = (
+            self.conn.execute(
+                insert(self.t["engagement_events"])
+                .values(
+                    id=uuid.uuid4(),
+                    tenant_id=tenant_id,
+                    engagement_id=engagement_id,
+                    actor_id=actor_id,
+                    action=action,
+                    prior_status=prior_status,
+                    new_status=new_status,
+                )
+                .returning(self.t["engagement_events"])
+            )
+            .mappings()
+            .first()
+        )
+        return _row(row)
+
+    def list_engagement_events(self, engagement_id: str, tenant_id: str) -> list[dict]:
+        rows = (
+            self.conn.execute(
+                select(self.t["engagement_events"])
+                .where(self.t["engagement_events"].c.engagement_id == engagement_id)
+                .where(self.t["engagement_events"].c.tenant_id == tenant_id)
+                .order_by(self.t["engagement_events"].c.created_at)
+            )
+            .mappings()
+            .all()
+        )
+        return [_row(r) for r in rows]
+
+    def get_tax_context(self, context_id: str, tenant_id: str) -> dict | None:
+        """Read-only verification access to jurisdiction contexts (writes are
+        owned by the jurisdiction slice; this slice never mutates them)."""
+        row = (
+            self.conn.execute(
+                select(self.t["tax_contexts"])
+                .where(self.t["tax_contexts"].c.id == context_id)
+                .where(self.t["tax_contexts"].c.tenant_id == tenant_id)
+            )
+            .mappings()
+            .first()
+        )
+        return _row(row) if row else None
+
+    # -- reconciliation runs (REC-SLICE-03 boundary) ---------------------------
+    def lock_run_key(self, tenant_id: str, engagement_id: str, operation: str, key: str) -> None:
+        """Serialize concurrent run requests sharing one idempotency identity.
+
+        Transaction-scoped advisory lock: concurrent same-key requests queue
+        here, so the check-then-insert below never doubles (intake pattern).
+        """
+        self.conn.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext(:k))"),
+            {"k": f"recon-run:{tenant_id}:{engagement_id}:{operation}:{key}"},
+        )
+
+    def get_runs_by_key(self, tenant_id: str, engagement_id: str, operation: str, key: str) -> list[dict]:
+        rows = (
+            self.conn.execute(
+                select(self.t["recon_runs"])
+                .where(self.t["recon_runs"].c.tenant_id == tenant_id)
+                .where(self.t["recon_runs"].c.engagement_id == engagement_id)
+                .where(self.t["recon_runs"].c.operation == operation)
+                .where(self.t["recon_runs"].c.idempotency_key == key)
+                .order_by(self.t["recon_runs"].c.created_at)
+            )
+            .mappings()
+            .all()
+        )
+        return [_row(r) for r in rows]
+
+    def create_run(
+        self,
+        tenant_id: str,
+        client_id: str,
+        engagement_id: str,
+        operation: str,
+        idempotency_key: str,
+        payload_hash: str,
+        sales_dataset_version_id: str,
+        jofo_dataset_version_id: str,
+        source_set_fingerprint: str,
+        rules_version: str,
+        projection_version: str,
+        period_start: date | None,
+        period_end: date | None,
+        jurisdiction_code: str | None,
+        blocked_reason: str,
+        blocked_detail: str | None,
+        requested_by: str | None,
+    ) -> dict:
+        row = (
+            self.conn.execute(
+                insert(self.t["recon_runs"])
+                .values(
+                    id=uuid.uuid4(),
+                    tenant_id=tenant_id,
+                    client_id=client_id,
+                    engagement_id=engagement_id,
+                    operation=operation,
+                    idempotency_key=idempotency_key,
+                    payload_hash=payload_hash,
+                    sales_dataset_version_id=sales_dataset_version_id,
+                    jofo_dataset_version_id=jofo_dataset_version_id,
+                    source_set_fingerprint=source_set_fingerprint,
+                    rules_version=rules_version,
+                    projection_version=projection_version,
+                    period_start=period_start,
+                    period_end=period_end,
+                    jurisdiction_code=jurisdiction_code,
+                    status="BLOCKED",
+                    blocked_reason=blocked_reason,
+                    blocked_detail=blocked_detail,
+                    requested_by=requested_by,
+                )
+                .returning(self.t["recon_runs"])
+            )
+            .mappings()
+            .first()
+        )
+        return _row(row)
+
+    def get_run(self, run_id: str, tenant_id: str) -> dict | None:
+        row = (
+            self.conn.execute(
+                select(self.t["recon_runs"])
+                .where(self.t["recon_runs"].c.id == run_id)
+                .where(self.t["recon_runs"].c.tenant_id == tenant_id)
+            )
+            .mappings()
+            .first()
+        )
+        return _row(row) if row else None
+
+    def list_runs(self, engagement_id: str, tenant_id: str) -> list[dict]:
+        rows = (
+            self.conn.execute(
+                select(self.t["recon_runs"])
+                .where(self.t["recon_runs"].c.engagement_id == engagement_id)
+                .where(self.t["recon_runs"].c.tenant_id == tenant_id)
+                .order_by(self.t["recon_runs"].c.created_at)
+            )
+            .mappings()
+            .all()
+        )
+        return [_row(r) for r in rows]
 
     # -- audit ------------------------------------------------------------------
     def audit(

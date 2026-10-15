@@ -75,6 +75,7 @@ def test_migration_discovery_exact_and_ordered():
         "0004_jurisdiction_foundation.sql",
         "0005_document_intakes.sql",
         "0006_extraction_jobs.sql",
+        "0007_rec_engagements.sql",
     ]
 
 
@@ -93,10 +94,12 @@ def test_discover_rejects_duplicate_versions(tmp_path):  # type: ignore[no-untyp
 
 def test_first_migration_applies_and_rerun_is_noop():
     # TEST-SAFETY-01: drops the ledger, so it runs on the disposable database.
+    # The DROP commits before migrate() runs: holding it open would deadlock
+    # migrate's bootstrap DDL on another connection (self-inflicted lock wait).
     url = _destructive_or_skip()
     with psycopg.connect(_to_libpq(url), connect_timeout=5) as conn:
         conn.execute("DROP TABLE IF EXISTS schema_migrations")
-    assert migrate(url) == ["0001", "0002", "0003", "0004", "0005", "0006"]
+    assert migrate(url) == ["0001", "0002", "0003", "0004", "0005", "0006", "0007"]
     assert migrate(url) == []
 
 

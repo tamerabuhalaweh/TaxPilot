@@ -115,6 +115,7 @@ def test_exact_match_is_informational_not_discrepancy() -> None:
     (item,) = projected.findings
     assert item.outcome_kind == EXACT_MATCH
     assert item.review_required is False
+    assert item.review_state is None
     assert item.category == "INFORMATIONAL"
     assert item.severity == "LOW"
     assert item.rule == "JO/REC-003/1"
@@ -131,18 +132,18 @@ def test_unmatched_sales_is_high_discrepancy() -> None:
     (item,) = projected.findings
     assert item.outcome_kind == UNMATCHED_SALES
     assert item.review_required is True
+    assert item.review_state == "PENDING_REVIEW"
     assert (item.category, item.severity) == ("RECONCILIATION_DIFFERENCE", "HIGH")
     assert "250.750" in item.difference and "JOD" in item.difference
 
 
 def test_unmatched_jofo_arabic_issuer_is_high_discrepancy() -> None:
-    report = reconcile(
-        (), (jofo_inv("INV-0008", "99.990", issuer=ISSUER_AR),), req()
-    )
+    report = reconcile((), (jofo_inv("INV-0008", "99.990", issuer=ISSUER_AR),), req())
     projected = project(report)
     (item,) = projected.findings
     assert item.outcome_kind == UNMATCHED_JOFOTARA
     assert item.review_required is True
+    assert item.review_state == "PENDING_REVIEW"
     assert (item.category, item.severity) == ("RECONCILIATION_DIFFERENCE", "HIGH")
     assert ISSUER_AR in item.title  # identifiers flow through verbatim
 
@@ -161,6 +162,7 @@ def test_amount_mismatch_carries_exact_decimal_delta() -> None:
     assert item.delta == "0.500"
     assert item.delta_currency == "JOD"
     assert "0.500 JOD" in item.difference
+    assert item.review_state == "PENDING_REVIEW"
 
 
 def test_duplicate_is_review_candidate_never_violation() -> None:
@@ -217,11 +219,12 @@ def test_verified_credit_link_is_informational() -> None:
     projected = project(report)
     linked = next(i for i in projected.findings if i.outcome_kind == CREDIT_NOTE_LINKED)
     assert linked.review_required is False
+    assert linked.review_state is None
     assert linked.category == "INFORMATIONAL"
     assert "not netted" in linked.difference
 
 
-def test_unverified_credit_is_informational() -> None:
+def test_unverified_credit_without_reference_needs_verification() -> None:
     report = reconcile(
         (sales_inv("CN-0002", "5.000", credit=True),),
         (),
@@ -229,20 +232,105 @@ def test_unverified_credit_is_informational() -> None:
     )
     assert [o.kind for o in report.outcomes] == [CREDIT_NOTE_UNVERIFIED]
     (item,) = project(report).findings
-    assert item.review_required is False
-    assert item.category == "INFORMATIONAL"
+    assert item.review_required is True
+    assert item.review_state == "PENDING_REVIEW"
+    assert (item.category, item.severity) == ("DATA_QUALITY", "MEDIUM")
+    assert "NO_REFERENCE" in item.flags
+    assert "no link is asserted" in item.difference
 
 
-def test_out_of_period_flags_are_preserved() -> None:
+def test_unverified_reference_flags_all_need_review() -> None:
+    report = reconcile(
+        (
+            sales_inv("INV-0020", "50.000", row=2),
+            sales_inv("CN-0020", "50.000", row=3, credit=True, reference_number="INV-0020"),
+            sales_inv("RV-0020", "9.000", row=4, reversal=True, reference_number="INV-9999"),
+        ),
+        (jofo_inv("INV-0020", "50.000", row=2),),
+        req(),
+    )
+    by_kind: dict[str, list] = {}
+    for item in project(report).findings:
+        by_kind.setdefault(item.outcome_kind, []).append(item)
+    (ambiguous_item,) = by_kind[CREDIT_NOTE_UNVERIFIED]
+    assert "AMBIGUOUS_TARGET" in ambiguous_item.flags
+    assert ambiguous_item.review_required is True
+    assert (ambiguous_item.category, ambiguous_item.review_state) == (
+        "REVIEW_CANDIDATE",
+        "PENDING_REVIEW",
+    )
+    (unresolved_item,) = by_kind[REVERSAL_UNVERIFIED]
+    assert "REFERENCE_UNRESOLVED" in unresolved_item.flags
+    assert unresolved_item.review_required is True
+    assert (unresolved_item.category, unresolved_item.review_state) == (
+        "REVIEW_CANDIDATE",
+        "PENDING_REVIEW",
+    )
+
+
+def test_jofo_only_items_show_actual_identity() -> None:
+    report = reconcile((), (jofo_inv("CN-0009", "5.000", credit=True),), req())
+    assert [o.kind for o in report.outcomes] == [CREDIT_NOTE_UNVERIFIED]
+    (item,) = project(report).findings
+    assert "CN-0009" in item.title
+    assert "—" not in item.title
+    assert item.review_required is True
+
+
+def test_out_of_period_exact_match_derives_period_exception() -> None:
     report = reconcile(
         (sales_inv("INV-0010", "20.000", date=date(2025, 12, 20)),),
         (jofo_inv("INV-0010", "20.000", date=date(2025, 12, 21)),),
         req(),
     )
     assert [o.kind for o in report.outcomes] == [EXACT_MATCH]
-    (item,) = project(report).findings
-    assert "PERIOD_OUTSIDE" in item.flags
-    assert item.review_required is False  # amounts reconcile; flag is context
+    projected = project(report)
+    assert len(projected.findings) == 2
+    base, exception = projected.findings
+    # The amount outcome is preserved as informational ...
+    assert base.outcome_kind == EXACT_MATCH
+    assert base.review_required is False
+    assert base.review_state is None
+    assert "PERIOD_OUTSIDE" in base.flags
+    assert "period-placement" in base.guidance
+    # ... while placement becomes its own review-required item.
+    assert exception.outcome_kind == EXACT_MATCH
+    assert exception.finding_id.endswith("-P")
+    assert exception.review_required is True
+    assert exception.review_state == "PENDING_REVIEW"
+    assert (exception.category, exception.severity) == ("DATA_QUALITY", "MEDIUM")
+    assert "outside the requested period" in exception.difference
+    assert "violation" not in exception.why.casefold()
+    assert projected.summary["review_required"] == 1
+    assert projected.summary["informational"] == 1
+
+
+def test_unknown_date_with_requested_period_needs_review() -> None:
+    report = reconcile(
+        (sales_inv("INV-0011", "20.000", date=None),),
+        (jofo_inv("INV-0011", "20.000", date=None),),
+        req(),
+    )
+    assert [o.kind for o in report.outcomes] == [EXACT_MATCH]
+    projected = project(report)
+    assert len(projected.findings) == 2
+    exception = projected.findings[1]
+    assert exception.review_required is True
+    assert (exception.category, exception.severity) == ("DATA_QUALITY", "MEDIUM")
+    assert "cannot be confirmed" in exception.difference
+
+
+def test_unknown_date_without_requested_period_stays_informational() -> None:
+    no_period = req(period_start=None, period_end=None)
+    report = reconcile(
+        (sales_inv("INV-0011", "20.000", date=None),),
+        (jofo_inv("INV-0011", "20.000", date=None),),
+        no_period,
+    )
+    assert [o.kind for o in report.outcomes] == [EXACT_MATCH]
+    projected = project(report)
+    assert len(projected.findings) == 1
+    assert projected.findings[0].review_required is False
 
 
 def _mixed_report() -> ReconciliationReport:
@@ -301,13 +389,14 @@ def test_every_outcome_kind_maps_to_policy() -> None:
         INSUFFICIENT_DATA: ("DATA_QUALITY", "MEDIUM", True),
         EXACT_MATCH: ("INFORMATIONAL", "LOW", False),
         CREDIT_NOTE_LINKED: ("INFORMATIONAL", "LOW", False),
-        CREDIT_NOTE_UNVERIFIED: ("INFORMATIONAL", "LOW", False),
+        CREDIT_NOTE_UNVERIFIED: ("DATA_QUALITY", "MEDIUM", True),
         REVERSAL_NOTED: ("INFORMATIONAL", "LOW", False),
-        REVERSAL_UNVERIFIED: ("INFORMATIONAL", "LOW", False),
+        REVERSAL_UNVERIFIED: ("REVIEW_CANDIDATE", "MEDIUM", True),
     }
     for outcome, item in zip(report.outcomes, projected.findings, strict=True):
         assert (item.category, item.severity, item.review_required) == expected[outcome.kind]
         assert item.rule == outcome.rule
+        assert (item.review_state == "PENDING_REVIEW") == item.review_required
 
 
 def test_accountant_facing_completeness_and_language() -> None:
@@ -324,10 +413,89 @@ def test_accountant_facing_completeness_and_language() -> None:
             assert text.strip()
             lowered = text.casefold()
             assert not any(word in lowered for word in BANNED_LANGUAGE), text
+        assert "counted once" not in item.difference.casefold()
         assert item.evidence
         assert item.rule.startswith("JO/")
         assert item.finding_id
+        assert (item.review_state == "PENDING_REVIEW") == item.review_required
     assert len({item.finding_id for item in projected.findings}) == len(projected.findings)
+
+
+def test_review_state_separates_information_from_review_work() -> None:
+    projected = project(_mixed_report())
+    assert any(item.review_state is None for item in projected.findings)
+    assert any(item.review_state == "PENDING_REVIEW" for item in projected.findings)
+    for item in projected.findings:
+        if not item.review_required:
+            assert item.review_state is None
+
+
+def _manual_report(*outcomes: MatchOutcome) -> ReconciliationReport:
+    return ReconciliationReport(
+        tenant_id="tenant-syn-1",
+        sales_dataset_id="SYN-SALES",
+        jofo_dataset_id="SYN-JOFO",
+        jurisdiction="JO",
+        rules_version="1",
+        tolerance=Decimal("0"),
+        period_start=PERIOD[0],
+        period_end=PERIOD[1],
+        outcomes=outcomes,
+        counts={},
+        sales_total=0,
+        jofo_total=0,
+        fingerprint="0" * 64,
+    )
+
+
+def test_missing_provenance_fails_closed() -> None:
+    naked = CanonicalInvoice(
+        issuer=ISSUER_EN,
+        number="INV-0099",
+        amount=Decimal("10.000"),
+        amount_raw="10.000",
+        currency="JOD",
+        transaction_date=date(2026, 3, 15),
+        provenance=None,
+    )
+    outcome = MatchOutcome(kind=EXACT_MATCH, rule="JO/REC-003/1", sales=(naked,), jofo=())
+    with pytest.raises(ValueError, match="provenance"):
+        project(_manual_report(outcome))
+
+
+def test_mixed_present_and_missing_provenance_fails_closed() -> None:
+    naked = CanonicalInvoice(
+        issuer=ISSUER_EN,
+        number="INV-0099",
+        amount=Decimal("10.000"),
+        amount_raw="10.000",
+        currency="JOD",
+        transaction_date=date(2026, 3, 15),
+        provenance=None,
+    )
+    outcome = MatchOutcome(
+        kind=EXACT_MATCH,
+        rule="JO/REC-003/1",
+        sales=(sales_inv("INV-0098", "10.000"),),
+        jofo=(naked,),
+    )
+    with pytest.raises(ValueError, match="provenance"):
+        project(_manual_report(outcome))
+
+
+def test_blank_provenance_dataset_fails_closed() -> None:
+    blank = CanonicalInvoice(
+        issuer=ISSUER_EN,
+        number="INV-0097",
+        amount=Decimal("10.000"),
+        amount_raw="10.000",
+        currency="JOD",
+        transaction_date=date(2026, 3, 15),
+        provenance=prov("  ", "sales_register", 2, "INV-0097"),
+    )
+    outcome = MatchOutcome(kind=EXACT_MATCH, rule="JO/REC-003/1", sales=(blank,), jofo=())
+    with pytest.raises(ValueError, match="provenance"):
+        project(_manual_report(outcome))
 
 
 def test_evidence_is_traceable_to_source_rows() -> None:
@@ -340,9 +508,7 @@ def test_evidence_is_traceable_to_source_rows() -> None:
         if r.provenance
     }
     evidence_rows = {
-        (e.dataset_id, e.source, e.row_number)
-        for item in projected.findings
-        for e in item.evidence
+        (e.dataset_id, e.source, e.row_number) for item in projected.findings for e in item.evidence
     }
     assert evidence_rows == source_rows
 
@@ -403,20 +569,5 @@ def test_non_report_input_is_rejected() -> None:
 
 def test_unknown_outcome_kind_fails_closed() -> None:
     outcome = MatchOutcome(kind="SOMETHING_NEW", rule="JO/REC-001/1")
-    report = ReconciliationReport(
-        tenant_id="tenant-syn-1",
-        sales_dataset_id="SYN-SALES",
-        jofo_dataset_id="SYN-JOFO",
-        jurisdiction="JO",
-        rules_version="1",
-        tolerance=Decimal("0"),
-        period_start=PERIOD[0],
-        period_end=PERIOD[1],
-        outcomes=(outcome,),
-        counts={"SOMETHING_NEW": 1},
-        sales_total=0,
-        jofo_total=0,
-        fingerprint="0" * 64,
-    )
     with pytest.raises(ValueError, match="unmapped outcome kind"):
-        project(report)
+        project(_manual_report(outcome))

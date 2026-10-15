@@ -4,7 +4,9 @@ Pipeline position: normalized datasets (EP-05A) -> **this engine** ->
 findings review (EP-10) -> bilingual reports (EP-11). Consumes CanonicalInvoice
 rows (via the sales adapter or explicit synthetic JoFotara fixtures) and emits
 a fingerprinted ReconciliationReport with evidence-linked outcomes. No
-persistence, API, LLM, tax interpretation, or fraud assertions.
+persistence, API, LLM, tax interpretation, or fraud assertions. The
+``findings`` projection turns a report into accountant-facing review items
+(read model only; decisions and persistence are later slices).
 
 SRS traceability (Master SRS v2.0 §7; specified behavior, integration later):
 REC-001/002 unmatched presence, REC-003 exact-Decimal differences with
@@ -33,6 +35,13 @@ from app.recon.contracts import (
     ReconciliationReport,
     rule_for,
 )
+from app.recon.findings import (
+    EvidenceRef,
+    FindingsReport,
+    MoneyView,
+    ReviewFinding,
+    project,
+)
 from app.recon.matching import reconcile
 
 __all__ = [
@@ -49,11 +58,16 @@ __all__ = [
     "UNMATCHED_JOFOTARA",
     "UNMATCHED_SALES",
     "CanonicalInvoice",
+    "EvidenceRef",
+    "FindingsReport",
     "InvoiceProvenance",
     "MatchOutcome",
+    "MoneyView",
     "ReconcileRequest",
     "ReconciliationReport",
+    "ReviewFinding",
     "SkippedRow",
+    "project",
     "reconcile",
     "rule_for",
     "sales_invoices_from_normalized",

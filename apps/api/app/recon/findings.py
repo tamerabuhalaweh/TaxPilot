@@ -213,11 +213,19 @@ def _evidence(
     for role, rows in (("sales", sales), ("jofo", jofo)):
         for row in rows:
             provenance = row.provenance
-            if provenance is None or not provenance.dataset_id.strip() or not provenance.source.strip():
+            row_number = provenance.row_number if provenance else None
+            if (
+                provenance is None
+                or not provenance.dataset_id.strip()
+                or not provenance.source.strip()
+                or isinstance(row_number, bool)
+                or not isinstance(row_number, int)
+                or row_number <= 0
+            ):
                 raise ValueError(
                     f"missing evidence provenance for {role} row "
                     f"{row.issuer!r} / {row.number!r}: findings require "
-                    "dataset_id + source + row_number"
+                    "dataset_id + source + a positive integer row_number"
                 )
             refs.append(
                 EvidenceRef(

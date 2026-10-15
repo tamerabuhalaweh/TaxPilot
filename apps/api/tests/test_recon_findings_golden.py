@@ -498,6 +498,37 @@ def test_blank_provenance_dataset_fails_closed() -> None:
         project(_manual_report(outcome))
 
 
+@pytest.mark.parametrize("bad_row", [0, -3, True, False, "2", 2.0, None])
+def test_invalid_row_number_fails_closed(bad_row: object) -> None:
+    bad = CanonicalInvoice(
+        issuer=ISSUER_EN,
+        number="INV-0096",
+        amount=Decimal("10.000"),
+        amount_raw="10.000",
+        currency="JOD",
+        transaction_date=date(2026, 3, 15),
+        provenance=InvoiceProvenance(
+            dataset_id="SYN-SALES",
+            source="sales_register",
+            row_number=bad_row,  # type: ignore[arg-type]
+            raw_invoice="INV-0096",
+        ),
+    )
+    outcome = MatchOutcome(kind=EXACT_MATCH, rule="JO/REC-003/1", sales=(bad,), jofo=())
+    with pytest.raises(ValueError, match="provenance"):
+        project(_manual_report(outcome))
+
+
+def test_positive_row_numbers_flow_into_evidence() -> None:
+    report = reconcile(
+        (sales_inv("INV-0095", "10.000", row=7),),
+        (jofo_inv("INV-0095", "10.000", row=9),),
+        req(),
+    )
+    (item,) = project(report).findings
+    assert {(e.role, e.row_number) for e in item.evidence} == {("sales", 7), ("jofo", 9)}
+
+
 def test_evidence_is_traceable_to_source_rows() -> None:
     report = _mixed_report()
     projected = project(report)

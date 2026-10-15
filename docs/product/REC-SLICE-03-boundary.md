@@ -33,6 +33,15 @@ Caller-supplied version IDs are references only, never proof of anything.
 - `recon_runs` rows are trigger-immutable (no UPDATE/DELETE); engagements are
   never deleted (client RESTRICT + event RESTRICT); every transition and
   refusal is audited. No mutation route exists for runs.
+- Engagement mutation is compare-and-swap on observed (status, revision): a
+  stale concurrent writer matches zero rows and fails closed with a stable
+  409, writing no history; late arrivals with a still-legal target commit as
+  audited chained transitions, never regressions.
+- Lineage is triple-scoped at the database level: events bind
+  (tenant, engagement), runs bind (tenant, engagement, client) — cross-tenant
+  or wrong-client lineage is rejected by foreign keys, not just by the API.
+- `engagement_events` is trigger-immutable (no UPDATE/DELETE): history is
+  append-only audit evidence.
 
 ## Explicitly blocked (not in this slice)
 

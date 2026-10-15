@@ -293,8 +293,22 @@ def patch_engagement(
             fields["assignee_user_id"] = _verified_assignee(store, tenant_of(user), body.assignee_user_id)
         if not fields:
             return _engagement_out(row)
-        updated = store.update_engagement(eid, tenant_of(user), **fields)
-        assert updated is not None
+        updated = store.update_engagement(eid, tenant_of(user), current, row["revision"], **fields)
+        if updated is None:
+            # Lost a concurrent race: another writer moved status/revision
+            # first. Fail closed with a stable 409; no events written.
+            fresh = store.get_engagement(eid, tenant_of(user))
+            if fresh is None:  # pragma: no cover - engagements are never deleted
+                raise AppError("NOT_FOUND", "Engagement not found.")
+            raise AppError(
+                "STATE_CONFLICT",
+                "Engagement changed concurrently; reload and retry.",
+                {
+                    "reason": "CONCURRENT_MODIFICATION",
+                    "current_status": fresh["status"],
+                    "current_revision": fresh["revision"],
+                },
+            )
         if "status" in fields:
             store.add_engagement_event(
                 tenant_of(user), eid, user.user_id, "status_changed", current, body.status

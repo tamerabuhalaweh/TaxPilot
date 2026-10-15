@@ -515,6 +515,120 @@ def test_concurrent_run_requests_single_record(api):  # type: ignore[no-untyped-
     assert len(listed) == 1
 
 
+# -- F1: concurrent opposite transitions converge -------------------------------------
+
+
+def test_concurrent_opposite_transitions_converge(api):  # type: ignore[no-untyped-def]
+    _onboard(api, "racer")
+    firm_client = _make_client(api)
+    eng_active = _activate(api, _make_engagement(api, firm_client["id"])["id"])
+    eng_draft = _make_engagement(api, firm_client["id"], review_type="review")
+    cookie = api.cookies.get("tp_session")
+    csrf = api.headers.get("X-CSRF-Token")
+    app = api.app
+    barrier = threading.Barrier(4)
+    outcomes_active: list = []
+    outcomes_draft: list = []
+
+    def attempt(eng_id, target, outcomes) -> None:
+        worker = _authed_worker_client(app, cookie, csrf)
+        barrier.wait(timeout=10)
+        outcomes.append(
+            worker.patch("/api/v1/engagements/" + eng_id, json={"status": target})
+        )
+
+    threads = [
+        threading.Thread(
+            target=attempt, args=(eng_active["id"], "CLOSED", outcomes_active)
+        ),
+        threading.Thread(
+            target=attempt, args=(eng_active["id"], "ARCHIVED", outcomes_active)
+        ),
+        threading.Thread(
+            target=attempt, args=(eng_draft["id"], "ACTIVE", outcomes_draft)
+        ),
+        threading.Thread(
+            target=attempt, args=(eng_draft["id"], "ARCHIVED", outcomes_draft)
+        ),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=60)
+    # Convergence invariants hold under every interleaving: a loser either
+    # raced on stale state (CAS conflict) or arrived after the winner and met
+    # a guard; a late arrival with a still-legal target commits as a chained
+    # transition (audited), never as a regression or silent overwrite.
+    allowed = {
+        "DRAFT": {"ACTIVE", "ARCHIVED"},
+        "ACTIVE": {"CLOSED", "ARCHIVED"},
+        "CLOSED": {"ARCHIVED"},
+    }
+    for outcomes, eng, targets in (
+        (outcomes_active, eng_active, {"CLOSED", "ARCHIVED"}),
+        (outcomes_draft, eng_draft, {"ACTIVE", "ARCHIVED"}),
+    ):
+        codes = sorted(t.status_code for t in outcomes)
+        assert codes in ([200, 409], [200, 200])
+        for loser in (t for t in outcomes if t.status_code == 409):
+            assert loser.json()["error"]["code"] == "STATE_CONFLICT"
+        final = api.get("/api/v1/engagements/" + eng["id"]).json()
+        assert final["status"] in targets
+        history = api.get("/api/v1/engagements/" + eng["id"] + "/history").json()
+        assert history[0]["action"] == "created"
+        changes = [e for e in history if e["action"] == "status_changed"]
+        state = "DRAFT"  # every engagement is created DRAFT; walk the full chain
+        for event in changes:
+            assert event["prior_status"] == state
+            assert event["new_status"] in allowed[state]
+            state = event["new_status"]
+        assert state == final["status"]
+        assert final["revision"] == 1 + len(changes)
+
+
+def test_store_cas_rejects_stale_revision(api):  # type: ignore[no-untyped-def]
+    """Deterministic F1 proof: a stale (status, revision) predicate matches zero rows."""
+    from sqlalchemy import create_engine
+
+    from app.store import Store, tables
+
+    me = _onboard(api, "casdet")
+    firm_client = _make_client(api)
+    engagement = _activate(api, _make_engagement(api, firm_client["id"])["id"])
+    tenant_id = me["tenant_id"]
+    eid = engagement["id"]
+    url = _scratch_or_skip()
+    engine = create_engine(url)
+    conn_a = engine.connect()
+    conn_b = engine.connect()
+    try:
+        store_a = Store(conn_a, tables())
+        store_b = Store(conn_b, tables())
+        stale = store_a.get_engagement(eid, tenant_id)
+        assert stale is not None
+        # Concurrent committer moves first and wins.
+        committed = store_b.update_engagement(
+            eid, tenant_id, stale["status"], stale["revision"], status="ARCHIVED"
+        )
+        assert committed is not None and committed["status"] == "ARCHIVED"
+        conn_b.commit()
+        # Stale writer matches zero rows: no overwrite, caller fails closed.
+        assert (
+            store_a.update_engagement(
+                eid, tenant_id, stale["status"], stale["revision"], status="CLOSED"
+            )
+            is None
+        )
+        conn_a.rollback()
+        fresh = store_b.get_engagement(eid, tenant_id)
+        assert fresh["status"] == "ARCHIVED"
+        assert fresh["revision"] == stale["revision"] + 1
+    finally:
+        conn_a.close()
+        conn_b.close()
+        engine.dispose()
+
+
 # -- acceptance 14: version change gives new identity --------------------------------
 
 
@@ -626,3 +740,78 @@ def test_refusals_carry_no_sensitive_contents(api):  # type: ignore[no-untyped-d
     for key in ("blocked_reason", "blocked_detail", "status", "operation"):
         assert isinstance(body[key], str)
     assert body["blocked_reason"] == "MISSING_DATASET_VERSION"
+
+
+# -- F2: scoped lineage enforced by the database ---------------------------------------
+
+
+def test_scoped_keys_reject_spoofed_lineage(api):  # type: ignore[no-untyped-def]
+    me = _onboard(api, "spoof")
+    client_a = _make_client(api, "Client A")
+    client_b = _make_client(api, "Client B")
+    eng_a = _make_engagement(api, client_a["id"])
+    other = TestClient(api.app, raise_server_exceptions=False)
+    tenant_b = _onboard(other, "spoof-b")["tenant_id"]
+    url = _scratch_or_skip()
+    with psycopg.connect(_to_libpq(url)) as conn:
+        # Cross-tenant event spoofing: tenant B binding engagement A.
+        with pytest.raises(Exception):
+            conn.execute(
+                "INSERT INTO engagement_events (tenant_id, engagement_id, action)"
+                " VALUES (%s, %s, 'created')",
+                (tenant_b, eng_a["id"]),
+            )
+        conn.rollback()
+        # Same-tenant wrong-client run: engagement of A recorded under B.
+        with pytest.raises(Exception):
+            conn.execute(
+                "INSERT INTO recon_runs (tenant_id, client_id, engagement_id,"
+                " operation, idempotency_key, payload_hash,"
+                " sales_dataset_version_id, jofo_dataset_version_id,"
+                " source_set_fingerprint, rules_version, projection_version,"
+                " status, blocked_reason)"
+                " VALUES (%s, %s, %s, 'rec.reconcile.v1', 'spoof-key', '0',"
+                " 'S', 'J', '0', '1', '1', 'BLOCKED', 'MISSING_DATASET_VERSION')",
+                (me["tenant_id"], client_b["id"], eng_a["id"]),
+            )
+        conn.rollback()
+        # Positive control: a correctly scoped event row persists.
+        event_id = conn.execute(
+            "INSERT INTO engagement_events (tenant_id, engagement_id, action)"
+            " VALUES (%s, %s, 'created') RETURNING id",
+            (me["tenant_id"], eng_a["id"]),
+        ).fetchone()[0]
+        kept = conn.execute(
+            "SELECT action FROM engagement_events WHERE id = %s", (event_id,)
+        ).fetchone()
+        assert kept[0] == "created"
+        conn.rollback()
+
+
+# -- F3: history is trigger-immutable ----------------------------------------------------
+
+
+def test_history_trigger_rejects_update_and_delete(api):  # type: ignore[no-untyped-def]
+    _onboard(api, "immutev")
+    firm_client = _make_client(api)
+    engagement = _make_engagement(api, firm_client["id"])
+    url = _scratch_or_skip()
+    with psycopg.connect(_to_libpq(url)) as conn:
+        row = conn.execute(
+            "SELECT id FROM engagement_events WHERE engagement_id = %s",
+            (engagement["id"],),
+        ).fetchone()
+        assert row is not None
+        with pytest.raises(Exception):
+            conn.execute(
+                "UPDATE engagement_events SET action = 'status_changed' WHERE id = %s",
+                (row[0],),
+            )
+        conn.rollback()
+        with pytest.raises(Exception):
+            conn.execute("DELETE FROM engagement_events WHERE id = %s", (row[0],))
+        conn.rollback()
+        kept = conn.execute(
+            "SELECT action FROM engagement_events WHERE id = %s", (row[0],)
+        ).fetchone()
+        assert kept[0] == "created"

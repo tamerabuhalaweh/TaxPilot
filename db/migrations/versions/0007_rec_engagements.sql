@@ -3,8 +3,9 @@
 -- cross-table references bind the full (tenant, ...) scope, never a bare id.
 -- Engagements reference clients with ON DELETE RESTRICT so client archive or
 -- deletion can never destroy engagement audit history. Engagement transitions
--- are recorded in engagement_events (actor + time + prior/new), rows are never
--- deleted. recon_runs rows are IMMUTABLE (trigger-guarded): execution requests
+-- are recorded in engagement_events (actor + time + prior/new); event rows are
+-- IMMUTABLE (trigger-guarded append-only history). recon_runs rows are
+-- IMMUTABLE (trigger-guarded): execution requests
 -- are recorded with a stable blocked reason while real dataset versions,
 -- mapping approvals, release gates, and supported JoFotara profiles have no
 -- persisted trusted source yet. No worker wiring: nothing here enables
@@ -29,8 +30,10 @@ CREATE TABLE IF NOT EXISTS engagements (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   CONSTRAINT engagements_tenant_client_fk
     FOREIGN KEY (tenant_id, client_id) REFERENCES clients(tenant_id, id) ON DELETE RESTRICT,
-  -- Lineage-grade scope key so run records below bind (tenant, engagement).
+  -- Lineage-grade scope keys so event/run records below bind the full
+  -- (tenant, engagement[, client]) scope, never a bare global id.
   CONSTRAINT engagements_tenant_key UNIQUE (tenant_id, id),
+  CONSTRAINT engagements_tenant_client_key UNIQUE (tenant_id, id, client_id),
   CONSTRAINT engagements_status CHECK (status IN ('DRAFT', 'ACTIVE', 'CLOSED', 'ARCHIVED')),
   CONSTRAINT engagements_period CHECK (period_start <= period_end),
   CONSTRAINT engagements_review_type CHECK (char_length(review_type) BETWEEN 1 AND 64),
@@ -45,12 +48,15 @@ CREATE INDEX IF NOT EXISTS engagements_tenant_client_idx
 CREATE TABLE IF NOT EXISTS engagement_events (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   tenant_id UUID NOT NULL,
-  engagement_id UUID NOT NULL REFERENCES engagements(id) ON DELETE RESTRICT,
+  engagement_id UUID NOT NULL,
   actor_id UUID REFERENCES users(id),
   action TEXT NOT NULL,
   prior_status TEXT,
   new_status TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- Scoped lineage: an event can never bind an engagement outside its tenant.
+  CONSTRAINT engagement_events_engagement_fk
+    FOREIGN KEY (tenant_id, engagement_id) REFERENCES engagements(tenant_id, id) ON DELETE RESTRICT,
   CONSTRAINT engagement_events_action CHECK (action IN ('created', 'status_changed', 'assignee_changed'))
 );
 
@@ -80,8 +86,11 @@ CREATE TABLE IF NOT EXISTS recon_runs (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   CONSTRAINT recon_runs_tenant_client_fk
     FOREIGN KEY (tenant_id, client_id) REFERENCES clients(tenant_id, id) ON DELETE RESTRICT,
-  CONSTRAINT recon_runs_tenant_engagement_fk
-    FOREIGN KEY (tenant_id, engagement_id) REFERENCES engagements(tenant_id, id) ON DELETE RESTRICT,
+  -- Triple-scoped lineage: the run's client must equal its engagement's client
+  -- within the tenant, so future writers cannot produce cross-client lineage.
+  CONSTRAINT recon_runs_tenant_engagement_client_fk
+    FOREIGN KEY (tenant_id, engagement_id, client_id)
+    REFERENCES engagements(tenant_id, id, client_id) ON DELETE RESTRICT,
   -- Execution stays refused until approved source conditions exist; execution
   -- statuses arrive with the worker slice, never by editing this migration.
   CONSTRAINT recon_runs_status CHECK (status IN ('BLOCKED')),
@@ -93,6 +102,25 @@ CREATE TABLE IF NOT EXISTS recon_runs (
 
 CREATE INDEX IF NOT EXISTS recon_runs_engagement_idx
   ON recon_runs (tenant_id, engagement_id, created_at);
+
+-- Engagement history is append-only audit evidence: no update path exists,
+-- no delete path exists (retention is a later decision, as with runs).
+CREATE OR REPLACE FUNCTION engagement_events_immutable_guard()
+RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  RAISE EXCEPTION 'engagement_events rows are immutable audit evidence (no updates, no deletes)';
+END;
+$$;
+
+DROP TRIGGER IF EXISTS engagement_events_no_mutation ON engagement_events;
+CREATE TRIGGER engagement_events_no_mutation
+BEFORE UPDATE ON engagement_events
+FOR EACH ROW EXECUTE FUNCTION engagement_events_immutable_guard();
+
+DROP TRIGGER IF EXISTS engagement_events_no_delete ON engagement_events;
+CREATE TRIGGER engagement_events_no_delete
+BEFORE DELETE ON engagement_events
+FOR EACH ROW EXECUTE FUNCTION engagement_events_immutable_guard();
 
 -- Run records are append-only evidence: no update path exists, and no delete
 -- path exists (retention is a later decision, as with document_intakes).

@@ -903,13 +903,29 @@ class Store:
         )
         return _row(row) if row else None
 
-    def update_engagement(self, engagement_id: str, tenant_id: str, **fields: Any) -> dict | None:
+    def update_engagement(
+        self,
+        engagement_id: str,
+        tenant_id: str,
+        expected_status: str,
+        expected_revision: int,
+        **fields: Any,
+    ) -> dict | None:
+        """Compare-and-swap engagement mutation (concurrency integrity).
+
+        The UPDATE predicates on the observed (status, revision): a concurrent
+        writer that committed first bumps revision, so a stale second writer
+        matches zero rows and the caller fails closed (409) without writing
+        history. Returns the updated row, or None on conflict/gone.
+        """
         table = self.t["engagements"]
         row = (
             self.conn.execute(
                 update(table)
                 .where(table.c.id == engagement_id)
                 .where(table.c.tenant_id == tenant_id)
+                .where(table.c.status == expected_status)
+                .where(table.c.revision == expected_revision)
                 .values(**fields, revision=table.c.revision + 1, updated_at=utcnow())
                 .returning(table)
             )

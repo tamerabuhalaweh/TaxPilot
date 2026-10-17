@@ -75,35 +75,63 @@ and **no outcomes**; `project_gl` renders a single review-required
 
 ## 5. Rules that hold on every path
 
+- **Coverage completeness (F1).** An in-scope record that cannot be placed or
+  validated — invalid debit/credit pair, missing amount/measure/currency, an
+  unknown period, a duplicate identity, or an unverified reversal/credit-note
+  link — **contaminates** its currency. A contaminated currency, or the whole
+  run when the affected currency itself cannot be established (missing or
+  out-of-scope currency), is reported `INCONCLUSIVE_COVERAGE`; **no affirmative
+  `RECONCILED`/`DIFFERENCE`/`MISSING_*` verdict is emitted** for it. Records are
+  never silently dropped and a missing amount is never replaced with zero. The
+  report carries `inconclusive=True` and typed `inconclusive_reasons`.
 - **Debit/credit independence.** Missing values are never zero; a line with
   both a debit and a credit is reported (`INVALID_DEBIT_CREDIT_PAIR`, per
   AQ-008) and excluded, never netted.
 - **Currency segregation.** Currencies never combine; an out-of-scope currency
   is refused (`CURRENCY_NOT_IN_SCOPE`), never converted (no FX).
 - **Duplicates.** Duplicate GL identity (`journal_id`, `line_number`) or sales
-  key (issuer+number) are reported (`DUPLICATE_GL`/`DUPLICATE_SALES`) and
-  excluded; a currency bucket touched by a duplicate gets **no**
-  `RECONCILED`/`DIFFERENCE` verdict (never a false conclusion).
-- **Credit notes & reversals** link ONLY through an explicit reference to an
-  existing document; otherwise preserved as relationship-unverified. Amounts are
-  never netted (`CREDIT_NOTE_LINKED/…UNVERIFIED`, `REVERSAL_NOTED/…UNVERIFIED`).
-- **Period.** Out-of-period (`PERIOD_OUTSIDE`) and dateless (`PERIOD_UNKNOWN`)
-  rows are surfaced and excluded, never silently netted.
+  key (issuer+number) are reported (`DUPLICATE_GL`/`DUPLICATE_SALES`), excluded,
+  and contaminate the affected currency — never a false conclusion.
+- **Reversal/credit-note links (F3).** A link verifies ONLY against a *distinct,
+  qualifying original* posting: for GL, an in-scope **non-reversal** journal
+  line; for sales, a **non-credit-note, non-reversal** invoice. Self-references
+  (`SELF_REFERENCE`), reversal-only cycles, references to out-of-scope
+  originals, and unresolved references all stay `…_UNVERIFIED` (and
+  contaminate). Amounts are never netted (`CREDIT_NOTE_LINKED/…UNVERIFIED`,
+  `REVERSAL_NOTED/…UNVERIFIED`).
+- **Period.** `PERIOD_OUTSIDE` is a legitimate in-period filter and does **not**
+  contaminate coverage; `PERIOD_UNKNOWN` (no date, so placement cannot be
+  established) does contaminate. Neither is silently netted.
 - **Exactness & determinism.** Aggregation is integer-scaled and independent of
   the ambient decimal context; outcomes and fingerprints are stable under any
-  input permutation.
+  input permutation (including inconclusive runs).
 - **Coverage.** Out-of-scope accounts are counted (`gl_out_of_scope`), never
   silently attributed.
 
-## 6. Declared-claim trust model
+## 6. Declared-claim trust model (F2)
 
 As with REC-DATA-02 and REC-JOFO-01: a caller-constructed `GLComparisonPolicy`
-carrying `status="APPROVED"` and a `GLPolicyProvenance` is a **declared claim,
-not authorization**. It must never be treated as a real accounting approval.
-`DEFAULT_GL_POLICY_REGISTRY` is empty and there is no global/ambient policy;
-genuine authorization requires a trusted, independently verified policy source
-populated through the accounting approval gate (accounting review → tax review
-where tax-concluding → publish → signed dry-run → tenant enablement).
+carrying `status="APPROVED"`, an `approved_by` string, and a
+`GLPolicyProvenance` is a **declared claim, not authorization**. `validate_policy`
+checks only internal completeness; it performs no authentication. A positive
+`compare_sales_to_gl` report is therefore a **synthetic, conditional pure-domain
+calculation — not production authority**, even when it reports `RECONCILED`.
+
+`DEFAULT_GL_POLICY_REGISTRY` is empty and there is no ambient/global policy.
+**No production integration may consume a caller-built policy.** Any live
+integration MUST obtain the governing policy from a trusted, independently
+verified approval registry that binds, at minimum:
+
+- **tenant** and **client** (on the request) plus the **engagement**;
+- an **immutable policy id + version** and the **reviewer authorization**
+  (server-verified — never a self-declared `approved_by` string);
+- the exact **account scope**, **sales measure**, **debit/credit convention**,
+  **currency scope**, **period**, and **tolerance** actually applied.
+
+Until that registry exists, genuine authorization requires the accounting
+approval gate (accounting review → tax review where tax-concluding → publish →
+signed dry-run → tenant enablement), and the source-release and mapping-approval
+gates stay closed. This slice adds **no** production wiring or approval shortcut.
 
 ## 7. Compatibility
 
@@ -142,9 +170,13 @@ real REC-005 run):**
 
 - `apps/api/app/recon/gl/{contracts,policy,matching,findings}.py` — pure domain.
 - `apps/api/tests/test_recon_gl_contracts.py`,
-  `test_recon_gl_matching_golden.py`, `test_recon_gl_findings_golden.py` — 41
-  synthetic tests: default-deny, reconciled/difference/tolerance, coverage,
-  malformed/missing values, currency segregation, period, duplicates, credit
-  notes/reversals, permutation-stable fingerprints, long-precision exactness.
+  `test_recon_gl_matching_golden.py`, `test_recon_gl_findings_golden.py` — 55
+  synthetic tests: default-deny, reconciled/difference/tolerance, coverage
+  contamination (F1 — every excluded/uncertain record blocks a conclusive
+  verdict; legitimate out-of-period rows do not), malformed/missing values,
+  currency segregation, period, duplicates, reversal/credit-note link
+  verification (F3 — self-reference, reversal-only cycles, out-of-scope and
+  unresolved originals refused; valid original posting verified), permutation-
+  stable fingerprints, long-precision exactness.
 - Full `apps/api/tests` suite green; `ruff check`, `ruff format --check`, and
   `mypy apps/api` clean.

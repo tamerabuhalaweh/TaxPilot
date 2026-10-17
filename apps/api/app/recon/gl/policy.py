@@ -6,6 +6,22 @@ supported comparison level. Anything else yields typed block reasons and the
 engine refuses (see ``gl.matching``). This module performs no authorization: it
 only checks the declared manifest for internal completeness, exactly like the
 normalization/JoFotara "declared is not verified" contracts.
+
+Trust boundary (F2): a caller can construct a :class:`GLComparisonPolicy` whose
+``status``/``approved_by``/``provenance`` fields are set by hand, so an
+APPROVED-looking manifest is a *declared claim*, not proof of an authorized
+accounting policy. A positive ``compare_sales_to_gl`` report is therefore a
+synthetic, conditional pure-domain calculation — never production authority.
+Any live integration MUST obtain the policy from a trusted, independently
+verified approval registry that binds, at minimum:
+- tenant and client (already on the request), plus the engagement;
+- an immutable policy id + version and its reviewer authorization (server
+  verified, not a self-declared ``approved_by`` string);
+- the account scope, sales measure, debit/credit convention, currency scope,
+  period, and tolerance actually applied.
+The ambient :data:`DEFAULT_GL_POLICY_REGISTRY` stays empty: there is no
+approved production policy and no shortcut to approve one. Source-release and
+mapping-approval gates remain closed.
 """
 
 from __future__ import annotations

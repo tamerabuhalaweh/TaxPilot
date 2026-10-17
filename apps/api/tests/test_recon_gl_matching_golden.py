@@ -13,6 +13,11 @@ from app.recon.contracts import InvoiceProvenance
 from app.recon.gl import (
     BASIS_AGGREGATE_PERIOD,
     BASIS_INVOICE_REFERENCE,
+    COVERAGE_CURRENCY_OUT_OF_SCOPE,
+    COVERAGE_INVALID_DEBIT_CREDIT_PAIR,
+    COVERAGE_MISSING_CURRENCY,
+    COVERAGE_MISSING_MEASURE,
+    COVERAGE_PERIOD_UNKNOWN,
     CREDIT_NOTE_LINKED,
     CREDIT_NOTE_UNVERIFIED,
     CREDIT_POSITIVE,
@@ -20,6 +25,7 @@ from app.recon.gl import (
     DIFFERENCE,
     DUPLICATE_GL,
     DUPLICATE_SALES,
+    INCONCLUSIVE_COVERAGE,
     INVALID_DEBIT_CREDIT_PAIR,
     MEASURE_GROSS,
     MEASURE_NET,
@@ -72,7 +78,7 @@ def sales_entry(
     *,
     tax: str | None = None,
     gross: str | None = None,
-    currency: str = "JOD",
+    currency: str | None = "JOD",
     when: date | None = date(2026, 3, 15),
     row: int = 2,
     credit: bool = False,
@@ -263,8 +269,12 @@ def test_invalid_debit_credit_pair_is_reported_and_excluded() -> None:
         request(policy()),
     )
     assert INVALID_DEBIT_CREDIT_PAIR in kinds(report)
-    # The valid line still reconciles against sales; the invalid line never nets.
-    assert RECONCILED in kinds(report)
+    # F1: the invalid line contaminates JOD coverage, so the matched pair can
+    # never yield an affirmative reconciliation despite equal valid totals.
+    assert RECONCILED not in kinds(report)
+    assert INCONCLUSIVE_COVERAGE in kinds(report)
+    assert report.inconclusive is True
+    assert COVERAGE_INVALID_DEBIT_CREDIT_PAIR in report.inconclusive_reasons
 
 
 def test_missing_amount_and_currency_are_reported() -> None:
@@ -308,7 +318,12 @@ def test_currency_not_in_scope_is_refused_never_converted() -> None:
         (gl_line("J1", 1, "4000", credit="100", currency="USD"),),
         request(policy()),  # scope is JOD only
     )
-    assert kinds(report) == [CURRENCY_NOT_IN_SCOPE, CURRENCY_NOT_IN_SCOPE]
+    assert kinds(report).count(CURRENCY_NOT_IN_SCOPE) == 2
+    # F1: a currency outside the approved scope means the run's coverage cannot
+    # be established; the comparison is explicitly inconclusive, never conclusive.
+    assert INCONCLUSIVE_COVERAGE in kinds(report)
+    assert RECONCILED not in kinds(report) and DIFFERENCE not in kinds(report)
+    assert COVERAGE_CURRENCY_OUT_OF_SCOPE in report.inconclusive_reasons
 
 
 def test_multi_currency_buckets_never_combine() -> None:
@@ -339,7 +354,11 @@ def test_period_outside_and_unknown_excluded() -> None:
         ),
         request(policy()),
     )
-    assert set(kinds(report)) == {PERIOD_OUTSIDE, PERIOD_UNKNOWN}
+    # PERIOD_OUTSIDE is a legitimate in-period exclusion (no contamination);
+    # PERIOD_UNKNOWN contaminates because the period cannot be established.
+    assert set(kinds(report)) == {PERIOD_OUTSIDE, PERIOD_UNKNOWN, INCONCLUSIVE_COVERAGE}
+    assert COVERAGE_PERIOD_UNKNOWN in report.inconclusive_reasons
+    assert COVERAGE_MISSING_CURRENCY not in report.inconclusive_reasons
 
 
 # -- duplicates ----------------------------------------------------------------
@@ -426,3 +445,197 @@ def test_zero_tolerance_defaults_and_matching_report_metadata() -> None:
     assert report.blocked is False
     assert report.sales_measure == MEASURE_NET
     assert report.currency_scope == ("JOD",)
+
+
+# -- F1: completeness / contamination ------------------------------------------
+
+
+def _matched_pair() -> tuple[tuple, tuple]:
+    return (sales_entry("1", "100", row=2),), (gl_line("J1", 1, "4000", credit="100", row=2),)
+
+
+def test_valid_pair_with_unresolved_gl_record_cannot_reconcile() -> None:
+    sales, gl = _matched_pair()
+    report = compare_sales_to_gl(
+        sales,
+        gl + (gl_line("J2", 1, "4000", debit="100", credit="100", row=3),),
+        request(policy()),
+    )
+    assert RECONCILED not in kinds(report) and DIFFERENCE not in kinds(report)
+    assert INCONCLUSIVE_COVERAGE in kinds(report)
+    assert report.inconclusive is True
+    jod = [o for o in report.outcomes if o.kind == INCONCLUSIVE_COVERAGE and o.currency == "JOD"]
+    assert jod  # the affected currency is explicitly reported inconclusive
+
+
+def test_each_contamination_scenario_blocks_conclusive_verdict() -> None:
+    cases = (
+        ("gl_invalid_pair", (), (gl_line("J2", 1, "4000", debit="100", credit="100", row=3),)),
+        ("gl_missing_amount", (), (gl_line("J2", 1, "4000", row=3),)),
+        ("gl_missing_currency", (), (gl_line("J2", 1, "4000", credit="100", currency=None, row=3),)),
+        ("gl_period_unknown", (), (gl_line("J2", 1, "4000", credit="100", when=None, row=3),)),
+        ("gl_duplicate", (), (gl_line("J1", 1, "4000", credit="100", row=3),)),
+        (
+            "gl_reversal_unverified",
+            (),
+            (gl_line("J9", 1, "4000", debit="100", reversal=True, ref="GHOST", row=3),),
+        ),
+        ("gl_out_of_scope_currency", (), (gl_line("J2", 1, "4000", credit="100", currency="USD", row=3),)),
+        ("sales_missing_measure", (sales_entry("2", net=None, gross="100", row=3),), ()),
+        ("sales_missing_currency", (sales_entry("2", "100", currency=None, row=3),), ()),
+        ("sales_period_unknown", (sales_entry("2", "100", when=None, row=3),), ()),
+        ("sales_duplicate", (sales_entry("1", "100", row=3),), ()),
+        ("sales_note_unverified", (sales_entry("C1", "100", credit=True, ref="NOPE", row=3),), ()),
+        ("sales_out_of_scope_currency", (sales_entry("2", "100", currency="USD", row=3),), ()),
+    )
+    for label, extra_sales, extra_gl in cases:
+        sales, gl = _matched_pair()
+        report = compare_sales_to_gl(sales + extra_sales, gl + extra_gl, request(policy()))
+        assert RECONCILED not in kinds(report), f"{label}: false RECONCILED"
+        assert DIFFERENCE not in kinds(report), f"{label}: false DIFFERENCE"
+        assert INCONCLUSIVE_COVERAGE in kinds(report), f"{label}: not inconclusive"
+        assert report.inconclusive is True, f"{label}: report not flagged inconclusive"
+
+
+def test_out_of_period_records_do_not_contaminate() -> None:
+    sales, gl = _matched_pair()
+    report = compare_sales_to_gl(
+        sales,
+        gl + (gl_line("J2", 1, "4000", credit="100", when=date(2027, 1, 5), row=3),),
+        request(policy()),
+    )
+    # Legitimate in-period filter: the out-of-period row is excluded but does
+    # not make coverage uncertain, so the matched pair still reconciles.
+    assert PERIOD_OUTSIDE in kinds(report)
+    assert RECONCILED in kinds(report)
+    assert report.inconclusive is False
+    assert report.inconclusive_reasons == ()
+
+
+def test_missing_currency_makes_whole_comparison_inconclusive() -> None:
+    sales, gl = _matched_pair()
+    report = compare_sales_to_gl(
+        sales,
+        gl + (gl_line("J2", 1, "4000", credit="100", currency=None, row=3),),
+        request(policy()),
+    )
+    assert RECONCILED not in kinds(report)
+    assert any(o.kind == INCONCLUSIVE_COVERAGE and o.currency == "JOD" for o in report.outcomes)
+    assert COVERAGE_MISSING_CURRENCY in report.inconclusive_reasons
+
+
+def test_only_global_contamination_yields_single_inconclusive_outcome() -> None:
+    report = compare_sales_to_gl(
+        (), (gl_line("J1", 1, "4000", credit="100", currency=None),), request(policy())
+    )
+    # The diagnostic for the unassignable row is preserved, and the run is
+    # flagged inconclusive with a currency-less outcome (no currency bucket).
+    assert kinds(report) == [MISSING_VALUE, INCONCLUSIVE_COVERAGE]
+    assert report.outcomes[-1].currency is None
+    assert report.inconclusive is True
+    assert COVERAGE_MISSING_CURRENCY in report.inconclusive_reasons
+
+
+def test_contamination_scenarios_together_union_of_reasons() -> None:
+    sales = (sales_entry("1", "100", row=2), sales_entry("2", net=None, gross="100", row=3))
+    gl = (
+        gl_line("J1", 1, "4000", credit="100", row=2),
+        gl_line("J2", 1, "4000", debit="1", credit="1", row=3),
+        gl_line("J3", 1, "4000", credit="100", when=None, row=4),
+    )
+    report = compare_sales_to_gl(sales, gl, request(policy()))
+    assert INCONCLUSIVE_COVERAGE in kinds(report)
+    assert RECONCILED not in kinds(report)
+    assert {
+        COVERAGE_MISSING_MEASURE,
+        COVERAGE_INVALID_DEBIT_CREDIT_PAIR,
+        COVERAGE_PERIOD_UNKNOWN,
+    } <= set(report.inconclusive_reasons)
+
+
+def test_inconclusive_fingerprint_is_permutation_stable() -> None:
+    sales, gl = _matched_pair()
+    gl = gl + (gl_line("J2", 1, "4000", debit="100", credit="100", row=3),)
+    forward = compare_sales_to_gl(sales, gl, request(policy()))
+    reversed_ = compare_sales_to_gl(tuple(reversed(sales)), tuple(reversed(gl)), request(policy()))
+    assert forward.inconclusive is True
+    assert forward.fingerprint == reversed_.fingerprint
+
+
+# -- F3: reversal / credit-note link verification ------------------------------
+
+
+def test_reversal_self_reference_is_unverified() -> None:
+    report = compare_sales_to_gl(
+        (),
+        (gl_line("J5", 1, "4000", debit="100", reversal=True, ref="J5"),),
+        request(policy()),
+    )
+    unverified = [o for o in report.outcomes if o.kind == REVERSAL_UNVERIFIED]
+    assert unverified and unverified[0].flags == ("SELF_REFERENCE",)
+    assert REVERSAL_NOTED not in kinds(report)
+
+
+def test_reversal_only_cycle_is_unverified() -> None:
+    report = compare_sales_to_gl(
+        (),
+        (
+            gl_line("JA", 1, "4000", debit="100", reversal=True, ref="JB", row=2),
+            gl_line("JB", 1, "4000", debit="100", reversal=True, ref="JA", row=3),
+        ),
+        request(policy()),
+    )
+    unverified = [o for o in report.outcomes if o.kind == REVERSAL_UNVERIFIED]
+    assert len(unverified) == 2
+    assert all(o.flags == ("REFERENCE_UNRESOLVED",) for o in unverified)
+    assert REVERSAL_NOTED not in kinds(report)
+
+
+def test_reversal_unresolved_reference_is_unverified() -> None:
+    report = compare_sales_to_gl(
+        (),
+        (
+            gl_line("J1", 1, "4000", credit="100", row=2),
+            gl_line("J9", 1, "4000", debit="100", reversal=True, ref="GHOST", row=3),
+        ),
+        request(policy()),
+    )
+    unverified = [o for o in report.outcomes if o.kind == REVERSAL_UNVERIFIED]
+    assert unverified and unverified[0].flags == ("REFERENCE_UNRESOLVED",)
+
+
+def test_reversal_valid_original_posting_is_verified() -> None:
+    report = compare_sales_to_gl(
+        (),
+        (
+            gl_line("J1", 1, "4000", credit="100", row=2),
+            gl_line("J9", 1, "4000", debit="100", reversal=True, ref="J1", row=3),
+        ),
+        request(policy()),
+    )
+    noted = [o for o in report.outcomes if o.kind == REVERSAL_NOTED]
+    assert noted and noted[0].flags == ("REFERENCE_VERIFIED",)
+
+
+def test_reversal_reference_to_out_of_scope_original_is_unverified() -> None:
+    report = compare_sales_to_gl(
+        (),
+        (
+            gl_line("J1", 1, "9999", credit="100", row=2),  # account 9999 not in scope
+            gl_line("J9", 1, "4000", debit="100", reversal=True, ref="J1", row=3),
+        ),
+        request(policy()),
+    )
+    assert REVERSAL_NOTED not in kinds(report)
+    assert REVERSAL_UNVERIFIED in kinds(report)
+
+
+def test_sales_credit_note_self_reference_is_unverified() -> None:
+    report = compare_sales_to_gl(
+        (sales_entry("C1", "100", credit=True, ref="C1", row=2),),
+        (gl_line("J1", 1, "4000", credit="100"),),
+        request(policy()),
+    )
+    unverified = [o for o in report.outcomes if o.kind == CREDIT_NOTE_UNVERIFIED]
+    assert unverified and unverified[0].flags == ("SELF_REFERENCE",)
+    assert CREDIT_NOTE_LINKED not in kinds(report)

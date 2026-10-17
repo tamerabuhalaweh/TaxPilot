@@ -90,6 +90,21 @@ REVERSAL_NOTED = "REVERSAL_NOTED"
 REVERSAL_UNVERIFIED = "REVERSAL_UNVERIFIED"
 CREDIT_NOTE_LINKED = "CREDIT_NOTE_LINKED"
 CREDIT_NOTE_UNVERIFIED = "CREDIT_NOTE_UNVERIFIED"
+# F1: emitted instead of RECONCILED/DIFFERENCE/MISSING_* for a currency whose
+# coverage is incomplete (invalid/ambiguous/unassignable records were excluded),
+# so an affirmative result is never produced from partial data.
+INCONCLUSIVE_COVERAGE = "INCONCLUSIVE_COVERAGE"
+
+# Coverage-contamination reason codes (carried on inconclusive outcomes and on
+# the report's ``inconclusive_reasons`` for unassignable/global contamination).
+COVERAGE_MISSING_CURRENCY = "COVERAGE_MISSING_CURRENCY"
+COVERAGE_CURRENCY_OUT_OF_SCOPE = "COVERAGE_CURRENCY_OUT_OF_SCOPE"
+COVERAGE_INVALID_DEBIT_CREDIT_PAIR = "COVERAGE_INVALID_DEBIT_CREDIT_PAIR"
+COVERAGE_MISSING_AMOUNT = "COVERAGE_MISSING_AMOUNT"
+COVERAGE_MISSING_MEASURE = "COVERAGE_MISSING_MEASURE"
+COVERAGE_PERIOD_UNKNOWN = "COVERAGE_PERIOD_UNKNOWN"
+COVERAGE_DUPLICATE = "COVERAGE_DUPLICATE"
+COVERAGE_UNVERIFIED_RELATIONSHIP = "COVERAGE_UNVERIFIED_RELATIONSHIP"
 
 _RULE_BY_KIND = {
     RECONCILED: "REC-005",
@@ -107,6 +122,7 @@ _RULE_BY_KIND = {
     REVERSAL_UNVERIFIED: "NOTE",
     CREDIT_NOTE_LINKED: "NOTE",
     CREDIT_NOTE_UNVERIFIED: "NOTE",
+    INCONCLUSIVE_COVERAGE: "NOTE",
 }
 
 KNOWN_OUTCOME_KINDS = tuple(_RULE_BY_KIND)
@@ -314,6 +330,17 @@ class GLComparisonPolicy:
     columns are signed before aggregation. ``sales_measure`` selects which sales
     amount is compared. Structural type errors raise; incompleteness is reported
     by :func:`policy.validate_policy` as typed block reasons (default-deny).
+
+    Trust boundary (F2): constructing this object — even with
+    ``status="APPROVED"``, an ``approved_by`` name, and provenance — is only a
+    *declared claim*. It is NOT proof of an authorized accounting policy, and a
+    positive report built from it is a synthetic, conditional pure-domain
+    calculation, not production authority. A live integration must instead bind,
+    against a trusted independently verified registry: tenant, client,
+    engagement, policy id/version, the reviewer authorization (server-verified,
+    never a self-declared string), and the exact account scope, measure,
+    convention, currency scope, period, and tolerance applied. See
+    ``policy.py`` and ``docs/product/REC-GL-01-boundary.md``.
     """
 
     policy_id: str
@@ -459,6 +486,12 @@ class GLComparisonReport:
 
     ``blocked`` is True when the run was refused (default-deny); then
     ``block_reasons`` is non-empty and ``outcomes`` is empty.
+
+    ``inconclusive`` is True when at least one in-scope record could not be
+    placed or validated, so coverage is incomplete (F1). Then no currency can
+    carry an affirmative ``RECONCILED``/``DIFFERENCE``/``MISSING_*`` verdict;
+    affected currencies are reported as ``INCONCLUSIVE_COVERAGE`` and
+    ``inconclusive_reasons`` lists the coverage-contamination codes.
     """
 
     tenant_id: str
@@ -479,6 +512,8 @@ class GLComparisonReport:
     policy_version: str | None
     blocked: bool
     block_reasons: tuple[str, ...]
+    inconclusive: bool
+    inconclusive_reasons: tuple[str, ...]
     outcomes: tuple[GLOutcome, ...]
     counts: dict[str, int]
     sales_total: int

@@ -12,7 +12,8 @@ Mapping policy v1 (versioned; hardcoded, caller-visible, revisable later):
 - MISSING_SALES / DUPLICATE_GL / DUPLICATE_SALES -> review candidate, MEDIUM,
   review required.
 - INVALID_DEBIT_CREDIT_PAIR / MISSING_VALUE / PERIOD_OUTSIDE / PERIOD_UNKNOWN /
-  CURRENCY_NOT_IN_SCOPE -> data quality, MEDIUM, review required.
+  CURRENCY_NOT_IN_SCOPE / INCONCLUSIVE_COVERAGE -> data quality, MEDIUM, review
+  required.
 - REVERSAL_UNVERIFIED / CREDIT_NOTE_UNVERIFIED -> relationship verification,
   MEDIUM (data quality when a reference is entirely absent), review required.
 - RECONCILED / REVERSAL_NOTED / CREDIT_NOTE_LINKED -> informational, LOW, no
@@ -34,6 +35,7 @@ from app.recon.gl.contracts import (
     DIFFERENCE,
     DUPLICATE_GL,
     DUPLICATE_SALES,
+    INCONCLUSIVE_COVERAGE,
     INVALID_DEBIT_CREDIT_PAIR,
     MISSING_GL,
     MISSING_SALES,
@@ -76,6 +78,7 @@ _POLICY: dict[str, tuple[str, str, bool]] = {
     PERIOD_OUTSIDE: (CATEGORY_QUALITY, SEVERITY_MEDIUM, True),
     PERIOD_UNKNOWN: (CATEGORY_QUALITY, SEVERITY_MEDIUM, True),
     CURRENCY_NOT_IN_SCOPE: (CATEGORY_QUALITY, SEVERITY_MEDIUM, True),
+    INCONCLUSIVE_COVERAGE: (CATEGORY_QUALITY, SEVERITY_MEDIUM, True),
     REVERSAL_UNVERIFIED: (CATEGORY_REVIEW, SEVERITY_MEDIUM, True),
     CREDIT_NOTE_UNVERIFIED: (CATEGORY_REVIEW, SEVERITY_MEDIUM, True),
     RECONCILED: (CATEGORY_INFO, SEVERITY_LOW, False),
@@ -144,6 +147,8 @@ class GLFindingsReport:
     rules_version: str
     blocked: bool
     block_reasons: tuple[str, ...]
+    inconclusive: bool
+    inconclusive_reasons: tuple[str, ...]
     recon_fingerprint: str
     findings: tuple[GLFinding, ...]
     summary: dict[str, object]
@@ -348,15 +353,35 @@ def _texts(outcome: GLOutcome) -> tuple[str, str, str, str, str, str, str | None
         noun = "Reversal" if outcome.kind == REVERSAL_UNVERIFIED else "Credit note"
         if "NO_REFERENCE" in outcome.flags:
             difference = f"{noun} states no original-document reference; no link is asserted"
+        elif "SELF_REFERENCE" in outcome.flags:
+            difference = (
+                f"{noun} reference points to itself, not a distinct original posting; " "no link is asserted"
+            )
         else:
-            difference = f"{noun} reference names no existing document; no link is asserted"
+            difference = (
+                f"{noun} reference names no qualifying original (unresolved, or only "
+                "other reversals); no link is asserted"
+            )
         return (
             f"{noun} relationship needs verification",
             f"{noun}: {gl_text if outcome.gl else sales_text}",
-            "Original-document reference where stated",
+            "A distinct qualifying original posting",
             f"{difference}; amounts are not netted",
-            "Reversals and credit notes link only through an explicit reference.",
+            "Reversals and credit notes link only through a distinct original reference.",
             "Establish which original document this relates to, then re-run reconciliation.",
+            None,
+        )
+    if outcome.kind == INCONCLUSIVE_COVERAGE:
+        scope = outcome.currency if outcome.currency else "the whole comparison"
+        coverage = ", ".join(outcome.rationale) if outcome.rationale else "incomplete coverage"
+        return (
+            f"Reconciliation inconclusive ({scope}): incomplete coverage",
+            f"Coverage gaps: {coverage}",
+            "The complete set of in-scope GL and sales rows for the currency",
+            "One or more relevant records could not be placed or validated, so no "
+            "conclusive result is reported and no totals are asserted for this currency",
+            "Partial data can otherwise produce a misleading reconciliation result.",
+            "Resolve the flagged rows (or establish their currency/period), then re-run.",
             None,
         )
     raise ValueError(f"unmapped GL outcome kind: {outcome.kind!r}")  # pragma: no cover
@@ -445,6 +470,8 @@ def project_gl(report: GLComparisonReport) -> GLFindingsReport:
         "by_outcome_kind": dict(report.counts),
         "blocked": report.blocked,
         "block_reasons": list(report.block_reasons),
+        "inconclusive": report.inconclusive,
+        "inconclusive_reasons": list(report.inconclusive_reasons),
     }
     return GLFindingsReport(
         projection_version=GL_PROJECTION_VERSION,
@@ -456,6 +483,8 @@ def project_gl(report: GLComparisonReport) -> GLFindingsReport:
         rules_version=report.rules_version,
         blocked=report.blocked,
         block_reasons=report.block_reasons,
+        inconclusive=report.inconclusive,
+        inconclusive_reasons=report.inconclusive_reasons,
         recon_fingerprint=report.fingerprint,
         findings=tuple(findings),
         summary=summary,

@@ -11,11 +11,23 @@ Rules that hold on every supported path:
 - Debit and credit stay independent until the *policy's* convention combines
   them; missing values are never zero and invalid pairs are reported, not netted.
 - Currencies never combine; a currency outside the approved scope is refused.
+- Completeness is tracked (F1): an in-scope record that cannot be placed or
+  validated (invalid debit/credit pair, missing amount/measure/currency,
+  unknown period, duplicate identity, unverified reversal/credit-note link)
+  *contaminates* its currency. A contaminated currency — or the whole run when
+  the affected currency itself cannot be established — yields
+  ``INCONCLUSIVE_COVERAGE``, never ``RECONCILED``/``DIFFERENCE``. Records cannot
+  be silently dropped and missing amounts are never replaced with zero.
+- Legitimate out-of-period rows (PERIOD_OUTSIDE) are excluded without
+  contaminating the in-period aggregate; rows whose period cannot be
+  established (PERIOD_UNKNOWN) do contaminate.
+- Reversal/credit-note links verify only against a *distinct, qualifying
+  original* non-reversal posting: self-references, reversal-only cycles, and
+  unresolved references stay ``*_UNVERIFIED`` (and contaminate).
 - Duplicates (journal+line on the GL side, issuer+number on the sales side) are
-  reported and excluded from the aggregate; a currency bucket touched by a
-  duplicate gets no RECONCILED/DIFFERENCE verdict (never a false conclusion).
-- Credit notes, reversals, and period-misplaced rows are preserved as linked /
-  review records, never netted into totals.
+  reported and excluded from the aggregate; the currency bucket is contaminated.
+- Credit notes and reversals are preserved as linked / review records, never
+  netted into totals.
 - Arithmetic is integer-scaled and independent of the ambient decimal context;
   fingerprints are stable under any input permutation.
 """
@@ -28,6 +40,14 @@ from datetime import date
 from decimal import Decimal, DecimalTuple
 
 from app.recon.gl.contracts import (
+    COVERAGE_CURRENCY_OUT_OF_SCOPE,
+    COVERAGE_DUPLICATE,
+    COVERAGE_INVALID_DEBIT_CREDIT_PAIR,
+    COVERAGE_MISSING_AMOUNT,
+    COVERAGE_MISSING_CURRENCY,
+    COVERAGE_MISSING_MEASURE,
+    COVERAGE_PERIOD_UNKNOWN,
+    COVERAGE_UNVERIFIED_RELATIONSHIP,
     CREDIT_NOTE_LINKED,
     CREDIT_NOTE_UNVERIFIED,
     CURRENCY_NOT_IN_SCOPE,
@@ -35,6 +55,7 @@ from app.recon.gl.contracts import (
     DIFFERENCE,
     DUPLICATE_GL,
     DUPLICATE_SALES,
+    INCONCLUSIVE_COVERAGE,
     INVALID_DEBIT_CREDIT_PAIR,
     MISSING_GL,
     MISSING_SALES,
@@ -182,6 +203,40 @@ def compare_sales_to_gl(
     current_measure = policy.sales_measure
     outcomes: list[GLOutcome] = []
 
+    # F1: completeness / contamination tracking. A currency whose coverage is
+    # incomplete is reported INCONCLUSIVE_COVERAGE instead of a false verdict.
+    # ``global_reasons`` holds contamination where the affected currency cannot
+    # be established at all (missing currency, out-of-scope currency); it makes
+    # the whole run inconclusive.
+    global_reasons: set[str] = set()
+    contaminated: dict[str, set[str]] = {}
+    excluded_gl: dict[str | None, list[GLLine]] = {}
+    excluded_sales: dict[str | None, list[SalesRegisterEntry]] = {}
+
+    def contaminate(
+        currency: str | None,
+        reason: str,
+        gl_rows: tuple[GLLine, ...] = (),
+        sales_entries: tuple[SalesRegisterEntry, ...] = (),
+    ) -> None:
+        bucket = currency
+        if currency is None:
+            global_reasons.add(reason)
+        else:
+            contaminated.setdefault(currency, set()).add(reason)
+        for gl_row in gl_rows:
+            excluded_gl.setdefault(bucket, []).append(gl_row)
+        for sales_row in sales_entries:
+            excluded_sales.setdefault(bucket, []).append(sales_row)
+
+    # F3: a reversal verifies only against a *distinct* qualifying original — an
+    # in-scope, non-reversal GL posting. Reversal-only journals never qualify.
+    reversal_targets = {
+        line.journal_id.strip()
+        for line in gl_lines
+        if not line.is_reversal and line.account_code.strip() in account_scope
+    }
+
     def emit(
         kind: str,
         gl: tuple[GLLine, ...] = (),
@@ -217,14 +272,31 @@ def compare_sales_to_gl(
 
     in_scope_live: list[GLLine] = []
     gl_out_of_scope = 0
-    journal_ids = {line.journal_id.strip() for line in gl_lines}
     for line in sorted(gl_lines, key=_gl_sort_key):
         if line.account_code.strip() not in account_scope:
             gl_out_of_scope += 1
             continue
+        bucket = line.currency if line.currency in currency_set else None
         if line.is_reversal:
             reference = (line.reversal_reference or "").strip()
-            if reference and reference in journal_ids:
+            own = line.journal_id.strip()
+            if not reference:
+                emit(
+                    REVERSAL_UNVERIFIED,
+                    gl=(line,),
+                    rationale=("REVERSAL_PRESERVED",),
+                    flags=("NO_REFERENCE",),
+                )
+                contaminate(bucket, COVERAGE_UNVERIFIED_RELATIONSHIP, gl_rows=(line,))
+            elif reference == own:
+                emit(
+                    REVERSAL_UNVERIFIED,
+                    gl=(line,),
+                    rationale=("REVERSAL_PRESERVED",),
+                    flags=("SELF_REFERENCE",),
+                )
+                contaminate(bucket, COVERAGE_UNVERIFIED_RELATIONSHIP, gl_rows=(line,))
+            elif reference in reversal_targets:
                 emit(
                     REVERSAL_NOTED,
                     gl=(line,),
@@ -232,19 +304,25 @@ def compare_sales_to_gl(
                     flags=("REFERENCE_VERIFIED",),
                 )
             else:
-                flags = () if reference else ("NO_REFERENCE",)
-                if reference:
-                    flags = ("REFERENCE_UNRESOLVED",)
-                emit(REVERSAL_UNVERIFIED, gl=(line,), rationale=("REVERSAL_PRESERVED",), flags=flags)
+                emit(
+                    REVERSAL_UNVERIFIED,
+                    gl=(line,),
+                    rationale=("REVERSAL_PRESERVED",),
+                    flags=("REFERENCE_UNRESOLVED",),
+                )
+                contaminate(bucket, COVERAGE_UNVERIFIED_RELATIONSHIP, gl_rows=(line,))
             continue
         if line.debit is not None and line.credit is not None:
             emit(INVALID_DEBIT_CREDIT_PAIR, gl=(line,), rationale=("DEBIT_AND_CREDIT_PRESENT",))
+            contaminate(bucket, COVERAGE_INVALID_DEBIT_CREDIT_PAIR, gl_rows=(line,))
             continue
         if line.debit is None and line.credit is None:
             emit(MISSING_VALUE, gl=(line,), rationale=("MISSING_AMOUNT",))
+            contaminate(bucket, COVERAGE_MISSING_AMOUNT, gl_rows=(line,))
             continue
         if line.currency is None:
             emit(MISSING_VALUE, gl=(line,), rationale=("MISSING_CURRENCY",))
+            contaminate(None, COVERAGE_MISSING_CURRENCY, gl_rows=(line,))
             continue
         if line.currency not in currency_set:
             emit(
@@ -253,12 +331,16 @@ def compare_sales_to_gl(
                 currency=line.currency,
                 rationale=("CURRENCY_NOT_APPROVED",),
             )
+            contaminate(None, COVERAGE_CURRENCY_OUT_OF_SCOPE, gl_rows=(line,))
             continue
         placement = _window(line.transaction_date, request.period_start, request.period_end)
         if placement == PERIOD_UNKNOWN:
             emit(PERIOD_UNKNOWN, gl=(line,), currency=line.currency, rationale=("PERIOD_UNKNOWN",))
+            contaminate(line.currency, COVERAGE_PERIOD_UNKNOWN, gl_rows=(line,))
             continue
         if placement == PERIOD_OUTSIDE:
+            # Legitimate out-of-period exclusion: not part of the in-period
+            # aggregate and does NOT contaminate coverage.
             emit(PERIOD_OUTSIDE, gl=(line,), currency=line.currency, rationale=("PERIOD_OUTSIDE",))
             continue
         if line.identity() in gl_dup_ids:
@@ -268,6 +350,12 @@ def compare_sales_to_gl(
     for key in sorted(gl_dup_ids):
         members = tuple(line for line in gl_lines if line.identity() == key)
         emit(DUPLICATE_GL, gl=members, rationale=("DUPLICATE_JOURNAL_LINE",))
+        for gl_member in members:
+            contaminate(
+                gl_member.currency if gl_member.currency in currency_set else None,
+                COVERAGE_DUPLICATE,
+                gl_rows=(gl_member,),
+            )
 
     # -- sales side ----------------------------------------------------------------
     sales_key_counts: dict[tuple[str, str], int] = {}
@@ -275,47 +363,44 @@ def compare_sales_to_gl(
         if not entry.is_credit_note and not entry.is_reversal:
             sales_key_counts[entry.key()] = sales_key_counts.get(entry.key(), 0) + 1
     sales_dup_keys = {key for key, count in sales_key_counts.items() if count > 1}
-    sales_numbers = {(e.issuer.strip().casefold(), e.invoice_number.strip()) for e in sales}
+    # F3: links verify only against a distinct qualifying original invoice — a
+    # non-credit-note, non-reversal entry. Credit notes/reversals never qualify
+    # as their own reference target (no self-reference or reversal-only cycles).
+    sales_numbers = {
+        (e.issuer.strip().casefold(), e.invoice_number.strip())
+        for e in sales
+        if not e.is_credit_note and not e.is_reversal
+    }
 
     sales_live: list[tuple[SalesRegisterEntry, Decimal]] = []
     for entry in sorted(sales, key=_sales_sort_key):
-        if entry.is_reversal:
+        bucket = entry.currency if entry.currency in currency_set else None
+        if entry.is_reversal or entry.is_credit_note:
             reference = (entry.reference_number or "").strip()
-            if reference and (entry.issuer.strip().casefold(), reference) in sales_numbers:
-                emit(
-                    REVERSAL_NOTED,
-                    sales_rows=(entry,),
-                    rationale=("REVERSAL_PRESERVED",),
-                    flags=("REFERENCE_VERIFIED",),
-                )
+            own_number = entry.invoice_number.strip()
+            kept = "REVERSAL_PRESERVED" if entry.is_reversal else "CREDIT_NOTE_PRESERVED"
+            kind_ok = REVERSAL_NOTED if entry.is_reversal else CREDIT_NOTE_LINKED
+            kind_bad = REVERSAL_UNVERIFIED if entry.is_reversal else CREDIT_NOTE_UNVERIFIED
+            if not reference:
+                emit(kind_bad, sales_rows=(entry,), rationale=(kept,), flags=("NO_REFERENCE",))
+                contaminate(bucket, COVERAGE_UNVERIFIED_RELATIONSHIP, sales_entries=(entry,))
+            elif reference == own_number:
+                emit(kind_bad, sales_rows=(entry,), rationale=(kept,), flags=("SELF_REFERENCE",))
+                contaminate(bucket, COVERAGE_UNVERIFIED_RELATIONSHIP, sales_entries=(entry,))
+            elif (entry.issuer.strip().casefold(), reference) in sales_numbers:
+                emit(kind_ok, sales_rows=(entry,), rationale=(kept,), flags=("REFERENCE_VERIFIED",))
             else:
-                flags = ("REFERENCE_UNRESOLVED",) if reference else ("NO_REFERENCE",)
-                emit(REVERSAL_UNVERIFIED, sales_rows=(entry,), rationale=("REVERSAL_PRESERVED",), flags=flags)
-            continue
-        if entry.is_credit_note:
-            reference = (entry.reference_number or "").strip()
-            if reference and (entry.issuer.strip().casefold(), reference) in sales_numbers:
-                emit(
-                    CREDIT_NOTE_LINKED,
-                    sales_rows=(entry,),
-                    rationale=("CREDIT_NOTE_PRESERVED",),
-                    flags=("REFERENCE_VERIFIED",),
-                )
-            else:
-                flags = ("REFERENCE_UNRESOLVED",) if reference else ("NO_REFERENCE",)
-                emit(
-                    CREDIT_NOTE_UNVERIFIED,
-                    sales_rows=(entry,),
-                    rationale=("CREDIT_NOTE_PRESERVED",),
-                    flags=flags,
-                )
+                emit(kind_bad, sales_rows=(entry,), rationale=(kept,), flags=("REFERENCE_UNRESOLVED",))
+                contaminate(bucket, COVERAGE_UNVERIFIED_RELATIONSHIP, sales_entries=(entry,))
             continue
         amount, _raw = entry.measure(current_measure)
         if amount is None:
             emit(MISSING_VALUE, sales_rows=(entry,), rationale=(f"MISSING_{current_measure}",))
+            contaminate(bucket, COVERAGE_MISSING_MEASURE, sales_entries=(entry,))
             continue
         if entry.currency is None:
             emit(MISSING_VALUE, sales_rows=(entry,), rationale=("MISSING_CURRENCY",))
+            contaminate(None, COVERAGE_MISSING_CURRENCY, sales_entries=(entry,))
             continue
         if entry.currency not in currency_set:
             emit(
@@ -324,12 +409,15 @@ def compare_sales_to_gl(
                 currency=entry.currency,
                 rationale=("CURRENCY_NOT_APPROVED",),
             )
+            contaminate(None, COVERAGE_CURRENCY_OUT_OF_SCOPE, sales_entries=(entry,))
             continue
         placement = _window(entry.transaction_date, request.period_start, request.period_end)
         if placement == PERIOD_UNKNOWN:
             emit(PERIOD_UNKNOWN, sales_rows=(entry,), currency=entry.currency, rationale=("PERIOD_UNKNOWN",))
+            contaminate(entry.currency, COVERAGE_PERIOD_UNKNOWN, sales_entries=(entry,))
             continue
         if placement == PERIOD_OUTSIDE:
+            # Legitimate out-of-period exclusion: does NOT contaminate coverage.
             emit(PERIOD_OUTSIDE, sales_rows=(entry,), currency=entry.currency, rationale=("PERIOD_OUTSIDE",))
             continue
         if entry.key() in sales_dup_keys:
@@ -341,6 +429,12 @@ def compare_sales_to_gl(
             e for e in sales if e.key() == sales_key and not e.is_credit_note and not e.is_reversal
         )
         emit(DUPLICATE_SALES, sales_rows=sales_members, rationale=("DUPLICATE_INVOICE_KEY",))
+        for sales_member in sales_members:
+            contaminate(
+                sales_member.currency if sales_member.currency in currency_set else None,
+                COVERAGE_DUPLICATE,
+                sales_entries=(sales_member,),
+            )
 
     # -- aggregate per currency and compare ----------------------------------------
     gl_totals: dict[str, Decimal] = {}
@@ -357,13 +451,34 @@ def compare_sales_to_gl(
         _store(sales_totals, entry.currency, amount)
         sales_rows_by_currency.setdefault(entry.currency, []).append(entry)
 
-    dup_currencies = {
-        line.currency for line in gl_lines if line.identity() in gl_dup_ids and line.currency
-    } | {e.currency for e in sales if e.key() in sales_dup_keys and e.currency}
+    # F1: a currency is only concluded when its coverage is complete. Any
+    # contaminated currency — or every currency when the affected one cannot be
+    # established (``global_reasons``) — is reported INCONCLUSIVE_COVERAGE, so
+    # partial data can never yield a false RECONCILED/DIFFERENCE/MISSING_*.
+    all_currencies: set[str] = set(gl_totals) | set(sales_totals) | set(contaminated)
+    for bucket_map in (excluded_gl, excluded_sales):
+        all_currencies.update(cur for cur in bucket_map if cur is not None)
 
-    for currency in sorted(set(gl_totals) | set(sales_totals)):
-        if currency in dup_currencies:
-            continue  # duplicate-contaminated bucket: no verdict (already reported)
+    if global_reasons and not all_currencies:
+        emit(
+            INCONCLUSIVE_COVERAGE,
+            gl=tuple(excluded_gl.get(None, ())),
+            sales_rows=tuple(excluded_sales.get(None, ())),
+            rationale=tuple(sorted(global_reasons)),
+        )
+
+    for currency in sorted(all_currencies):
+        reasons = set(contaminated.get(currency, set())) | global_reasons
+        if reasons:
+            emit(
+                INCONCLUSIVE_COVERAGE,
+                gl=tuple(gl_rows.get(currency, ())) + tuple(excluded_gl.get(currency, ())),
+                sales_rows=tuple(sales_rows_by_currency.get(currency, ()))
+                + tuple(excluded_sales.get(currency, ())),
+                currency=currency,
+                rationale=tuple(sorted(reasons)),
+            )
+            continue
         gl_value = gl_totals.get(currency)
         sales_value = sales_totals.get(currency)
         g_rows = tuple(gl_rows.get(currency, ()))
@@ -400,6 +515,11 @@ def compare_sales_to_gl(
                 rationale=("TOTALS_DIFFER",),
             )
 
+    inconclusive_reasons = tuple(
+        sorted(global_reasons | {reason for reasons in contaminated.values() for reason in reasons})
+    )
+    inconclusive = bool(inconclusive_reasons)
+
     counts: dict[str, int] = {}
     for outcome in outcomes:
         counts[outcome.kind] = counts.get(outcome.kind, 0) + 1
@@ -422,6 +542,8 @@ def compare_sales_to_gl(
         policy_version=policy.policy_version,
         blocked=False,
         block_reasons=(),
+        inconclusive=inconclusive,
+        inconclusive_reasons=inconclusive_reasons,
         outcomes=tuple(outcomes),
         counts=counts,
         sales_total=len(sales),
@@ -439,6 +561,8 @@ def compare_sales_to_gl(
             policy.tolerance,
             False,
             (),
+            inconclusive,
+            inconclusive_reasons,
             outcomes,
         ),
     )
@@ -474,13 +598,28 @@ def _blocked(
         policy_version=pver,
         blocked=True,
         block_reasons=reasons,
+        inconclusive=False,
+        inconclusive_reasons=(),
         outcomes=(),
         counts={},
         sales_total=0,
         gl_total=0,
         gl_out_of_scope=0,
         fingerprint=_fingerprint(
-            request, pid, pver, basis, measure, convention, scope, currencies, tolerance, True, reasons, []
+            request,
+            pid,
+            pver,
+            basis,
+            measure,
+            convention,
+            scope,
+            currencies,
+            tolerance,
+            True,
+            reasons,
+            False,
+            (),
+            [],
         ),
     )
 
@@ -497,6 +636,8 @@ def _fingerprint(
     tolerance: object,
     blocked: bool,
     block_reasons: tuple[str, ...],
+    inconclusive: bool,
+    inconclusive_reasons: tuple[str, ...],
     outcomes: list[GLOutcome],
 ) -> str:
     def gl_blob(line: GLLine) -> object:
@@ -580,6 +721,8 @@ def _fingerprint(
         ],
         "blocked": blocked,
         "block_reasons": list(block_reasons),
+        "inconclusive": inconclusive,
+        "inconclusive_reasons": list(inconclusive_reasons),
         "outcomes": sorted(
             [outcome_blob(o) for o in outcomes], key=lambda blob: json.dumps(blob, sort_keys=True)
         ),

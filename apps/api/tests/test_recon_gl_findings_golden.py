@@ -13,7 +13,9 @@ import pytest
 from app.recon.contracts import InvoiceProvenance
 from app.recon.gl import (
     BASIS_AGGREGATE_PERIOD,
+    COVERAGE_INVALID_DEBIT_CREDIT_PAIR,
     CREDIT_POSITIVE,
+    INCONCLUSIVE_COVERAGE,
     MEASURE_NET,
     POLICY_APPROVED,
     GLComparisonPolicy,
@@ -29,6 +31,7 @@ from app.recon.gl.findings import (
     CATEGORY_CONTRACT,
     CATEGORY_DIFFERENCE,
     CATEGORY_INFO,
+    CATEGORY_QUALITY,
     SEVERITY_HIGH,
     SEVERITY_LOW,
 )
@@ -176,3 +179,31 @@ def test_unknown_outcome_kind_fails_closed() -> None:
     poisoned = replace(report, outcomes=(GLOutcome(kind="BOGUS", rule="JO/REC-005/1"),))
     with pytest.raises(ValueError):
         project_gl(poisoned)
+
+
+def test_inconclusive_coverage_projects_data_quality_item() -> None:
+    invalid = GLLine(
+        journal_id="J2",
+        line_number=1,
+        account_code="4000",
+        transaction_date=date(2026, 3, 20),
+        debit=Decimal("100"),
+        credit=Decimal("100"),
+        debit_raw="100",
+        credit_raw="100",
+        currency="JOD",
+        provenance=GLEntryProvenance(
+            dataset_id="SYN-GL", source="general_ledger", row_number=3, raw_reference="J2-1"
+        ),
+    )
+    report = compare_sales_to_gl(
+        (sales_entry("1", "150"),), (gl_line("J1", "150"), invalid), request(policy())
+    )
+    projected = project_gl(report)
+    assert projected.inconclusive is True
+    assert COVERAGE_INVALID_DEBIT_CREDIT_PAIR in projected.inconclusive_reasons
+    assert projected.summary["inconclusive"] is True
+    assert "RECONCILED" not in [f.outcome_kind for f in projected.findings]
+    inconclusive = [f for f in projected.findings if f.outcome_kind == INCONCLUSIVE_COVERAGE]
+    assert inconclusive and inconclusive[0].category == CATEGORY_QUALITY
+    assert inconclusive[0].review_required is True

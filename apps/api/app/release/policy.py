@@ -27,6 +27,10 @@ Design invariants (issue #61; `docs/architecture/EP04C_SECURITY_ARCHITECTURE.md`
   user-provided hash, the mere existence of a registry row, or a self-reported
   object tag. ``UNSUPPORTED``/``ACCESS_DENIED``/``FAILED``/``TIMEOUT``/unknown
   verdicts and provider outages never mean clean.
+- **Time is finite or refused.** Freshness and expiry compare against genuine
+  finite numeric timestamps only. NaN, ±infinity, booleans, strings and inverted
+  expiry windows fail closed with typed reasons instead of slipping past a
+  comparison (``nan < 0``/``nan > x``/``nan >= x`` are all false).
 
 The implementation that persists evidence and drives this policy is deliberately
 **not** in this slice: DEC-S1 (object store), DEC-S2 (scanner + verdict trust),
@@ -36,6 +40,7 @@ all BLOCKED. See `docs/product/REC-DATA-03-boundary.md`.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 # --- scanner verdicts (verbatim provider values; never reinterpreted) ----------
@@ -76,6 +81,9 @@ PROVIDER_OUTAGE = "PROVIDER_OUTAGE"
 UNKNOWN_SCAN_VERDICT = "UNKNOWN_SCAN_VERDICT"
 SCAN_VERDICT_NOT_CLEAN = "SCAN_VERDICT_NOT_CLEAN"
 STALE_SCAN_EVIDENCE = "STALE_SCAN_EVIDENCE"
+INVALID_SERVER_TIME = "INVALID_SERVER_TIME"
+INVALID_POLICY_FRESHNESS = "INVALID_POLICY_FRESHNESS"
+INVALID_SCAN_EVIDENCE_TIME = "INVALID_SCAN_EVIDENCE_TIME"
 INTEGRITY_MISMATCH = "INTEGRITY_MISMATCH"
 MISSING_ENGINE_PROVENANCE = "MISSING_ENGINE_PROVENANCE"
 POLICY_VERSION_MISMATCH = "POLICY_VERSION_MISMATCH"
@@ -85,6 +93,7 @@ UNTRUSTED_RELEASE_AUTHORITY = "UNTRUSTED_RELEASE_AUTHORITY"
 UNSUPPORTED_RELEASE_SCOPE = "UNSUPPORTED_RELEASE_SCOPE"
 RELEASE_REVOKED = "RELEASE_REVOKED"
 INCOMPLETE_APPROVALS = "INCOMPLETE_APPROVALS"
+INVALID_AUTHORIZATION_TIME = "INVALID_AUTHORIZATION_TIME"
 RELEASE_EXPIRED = "RELEASE_EXPIRED"
 RELEASE_AUTHORIZED = "RELEASE_AUTHORIZED"
 
@@ -100,6 +109,9 @@ PRECEDENCE = (
     PROVIDER_OUTAGE,
     UNKNOWN_SCAN_VERDICT,
     SCAN_VERDICT_NOT_CLEAN,
+    INVALID_SERVER_TIME,
+    INVALID_POLICY_FRESHNESS,
+    INVALID_SCAN_EVIDENCE_TIME,
     STALE_SCAN_EVIDENCE,
     INTEGRITY_MISMATCH,
     MISSING_ENGINE_PROVENANCE,
@@ -110,6 +122,7 @@ PRECEDENCE = (
     UNSUPPORTED_RELEASE_SCOPE,
     RELEASE_REVOKED,
     INCOMPLETE_APPROVALS,
+    INVALID_AUTHORIZATION_TIME,
     RELEASE_EXPIRED,
 )
 
@@ -117,6 +130,28 @@ SUPPORTED_FILE_TYPES = ("csv", "xlsx")
 EXPECTED_INTAKE_STATUS = "QUARANTINED"
 SUPPORTED_RELEASE_SCOPES = ("extract",)
 REJECTED_STATUS = "REJECTED"
+
+
+def _is_finite_number(value: object) -> bool:
+    """True only for a genuine finite ``int``/``float``.
+
+    Rejects ``bool`` (an ``int`` subclass), NaN, ±infinity, strings/None, and
+    integers too large to represent as a float — all of which would otherwise
+    slip past ``<``/``>``/``>=`` comparisons.
+    """
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return False
+    try:
+        return math.isfinite(float(value))
+    except (OverflowError, TypeError, ValueError):
+        return False
+
+
+def _is_valid_max_age(value: object) -> bool:
+    """True only for a nonnegative finite ``int`` (rejects bool/float/None/NaN)."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return False
+    return value >= 0
 
 
 @dataclass(frozen=True)
@@ -251,9 +286,18 @@ def evaluate_release(
     # 9. Only an explicit clean verdict releases.
     if scan.verdict not in CLEAN_VERDICTS:
         return ReleaseDecision(False, SCAN_VERDICT_NOT_CLEAN)
-    # 10. Freshness: with no approved freshness window, nothing is fresh enough.
+    # 10. Freshness. Server time, the scan timestamp, and the policy's freshness
+    #     window must all be genuine finite numbers: a non-finite or malformed
+    #     value (NaN/±inf/bool/string) fails closed instead of slipping past the
+    #     comparison. ``None`` max-age means no evidence is fresh (default-closed).
+    if not _is_finite_number(now):
+        return ReleaseDecision(False, INVALID_SERVER_TIME)
+    if not _is_finite_number(scan.scanned_at):
+        return ReleaseDecision(False, INVALID_SCAN_EVIDENCE_TIME)
     if policy.max_evidence_age_seconds is None:
         return ReleaseDecision(False, STALE_SCAN_EVIDENCE)
+    if not _is_valid_max_age(policy.max_evidence_age_seconds):
+        return ReleaseDecision(False, INVALID_POLICY_FRESHNESS)
     age = now - scan.scanned_at
     if age < 0 or age > policy.max_evidence_age_seconds:
         return ReleaseDecision(False, STALE_SCAN_EVIDENCE)
@@ -288,10 +332,20 @@ def evaluate_release(
         required = max(2, policy.minimum_approvals)
         if len(set(authorization.approvals)) < required:
             return ReleaseDecision(False, INCOMPLETE_APPROVALS)
-    # 20. Expiry is enforced against server time; an open-ended authorization
-    #     from an unapproved policy is impossible (policy.approved gate above).
-    if authorization.expires_at is not None and now >= authorization.expires_at:
-        return ReleaseDecision(False, RELEASE_EXPIRED)
+    # 20. Authorization chronology must be genuine finite server time; malformed
+    #     timestamps or an inverted window (expiry before issue) fail closed. A
+    #     finite release TTL is a pending production-policy decision (F3); it is
+    #     documented, not silently adopted here.
+    if not _is_finite_number(authorization.issued_at):
+        return ReleaseDecision(False, INVALID_AUTHORIZATION_TIME)
+    if authorization.expires_at is not None:
+        if not _is_finite_number(authorization.expires_at):
+            return ReleaseDecision(False, INVALID_AUTHORIZATION_TIME)
+        if authorization.expires_at < authorization.issued_at:
+            return ReleaseDecision(False, INVALID_AUTHORIZATION_TIME)
+        # 21. Expiry is enforced against server time.
+        if now >= authorization.expires_at:
+            return ReleaseDecision(False, RELEASE_EXPIRED)
     return ReleaseDecision(True, RELEASE_AUTHORIZED)
 
 

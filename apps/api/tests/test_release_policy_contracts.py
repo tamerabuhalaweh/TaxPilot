@@ -26,6 +26,10 @@ from app.release import (
     INCOMPLETE_APPROVALS,
     INTAKE_NOT_QUARANTINED,
     INTEGRITY_MISMATCH,
+    INVALID_AUTHORIZATION_TIME,
+    INVALID_POLICY_FRESHNESS,
+    INVALID_SCAN_EVIDENCE_TIME,
+    INVALID_SERVER_TIME,
     MISSING_ENGINE_PROVENANCE,
     MISSING_RELEASE_AUTHORIZATION,
     MISSING_SCAN_EVIDENCE,
@@ -339,3 +343,96 @@ def test_release_never_touches_dataset_fingerprint() -> None:
     names = {f.name for f in fields(ScanEvidence)} | {f.name for f in fields(SourceFacts)}
     assert "dataset_fingerprint" not in names
     assert "object_sha256" in names
+
+
+# -- F1: non-finite / malformed time values must fail closed --------------------
+
+_NON_FINITE = [float("nan"), float("inf"), float("-inf"), True, False, "1000", None]
+# None is excluded for expiry: an open-ended authorization is a documented
+# pending policy decision (F3), not a malformed timestamp.
+_NON_FINITE_EXCLUDING_NONE = [float("nan"), float("inf"), float("-inf"), True, False, "1000"]
+
+
+def test_default_policy_master_deny_holds_for_nan_server_time() -> None:
+    # The unconditional default-deny gate outranks any time validation.
+    decision = evaluate_release(
+        policy=DEFAULT_RELEASE_POLICY,
+        source=_source(),
+        scan=_scan(scanned_at=float("nan")),
+        authorization=_auth(expires_at=float("nan")),
+        now=float("nan"),
+    )
+    assert (decision.released, decision.reason) == (False, RELEASE_NOT_ENABLED)
+
+
+def test_nan_time_bypass_is_closed() -> None:
+    # The three original F1 exploit vectors: each previously reached
+    # RELEASE_AUTHORIZED under an approved policy.
+    assert _decide(_policy(), now=float("nan")).reason == INVALID_SERVER_TIME
+    assert _decide(_policy(), scan=_scan(scanned_at=float("nan"))).reason == INVALID_SCAN_EVIDENCE_TIME
+    assert (
+        _decide(_policy(), authorization=_auth(expires_at=float("nan"))).reason == INVALID_AUTHORIZATION_TIME
+    )
+
+
+@pytest.mark.parametrize("value", _NON_FINITE)
+def test_invalid_server_time_refused(value: object) -> None:
+    decision = _decide(_policy(), now=value)
+    assert (decision.released, decision.reason) == (False, INVALID_SERVER_TIME)
+
+
+@pytest.mark.parametrize("value", _NON_FINITE)
+def test_invalid_scan_timestamp_refused(value: object) -> None:
+    decision = _decide(_policy(), scan=_scan(scanned_at=value))
+    assert (decision.released, decision.reason) == (False, INVALID_SCAN_EVIDENCE_TIME)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [float("nan"), float("inf"), float("-inf"), True, False, "60", 60.0, -1, -3600],
+)
+def test_invalid_policy_freshness_refused(value: object) -> None:
+    decision = _decide(_policy(max_evidence_age_seconds=value))
+    assert (decision.released, decision.reason) == (False, INVALID_POLICY_FRESHNESS)
+
+
+@pytest.mark.parametrize("value", _NON_FINITE)
+def test_invalid_authorization_issued_at_refused(value: object) -> None:
+    decision = _decide(_policy(), authorization=_auth(issued_at=value))
+    assert (decision.released, decision.reason) == (False, INVALID_AUTHORIZATION_TIME)
+
+
+@pytest.mark.parametrize("value", _NON_FINITE_EXCLUDING_NONE)
+def test_invalid_authorization_expiry_refused(value: object) -> None:
+    decision = _decide(_policy(), authorization=_auth(expires_at=value))
+    assert (decision.released, decision.reason) == (False, INVALID_AUTHORIZATION_TIME)
+
+
+def test_inverted_expiry_window_refused() -> None:
+    decision = _decide(_policy(), authorization=_auth(issued_at=NOW, expires_at=NOW - 1))
+    assert (decision.released, decision.reason) == (False, INVALID_AUTHORIZATION_TIME)
+
+
+# -- F1 positive controls: genuine finite values still release ------------------
+
+
+def test_finite_boundary_age_still_releases() -> None:
+    # age exactly equal to the approved window is fresh (only > is stale).
+    decision = _decide(_policy(max_evidence_age_seconds=3600), scan=_scan(scanned_at=NOW - 3600))
+    assert (decision.released, decision.reason) == (True, RELEASE_AUTHORIZED)
+
+
+def test_integer_timestamps_are_accepted() -> None:
+    decision = _decide(
+        _policy(),
+        source=_source(),
+        scan=_scan(scanned_at=900),
+        authorization=_auth(issued_at=910, expires_at=2000),
+        now=1000,
+    )
+    assert (decision.released, decision.reason) == (True, RELEASE_AUTHORIZED)
+
+
+def test_expiry_exactly_at_now_is_refused() -> None:
+    decision = _decide(_policy(), authorization=_auth(expires_at=NOW))
+    assert (decision.released, decision.reason) == (False, RELEASE_EXPIRED)

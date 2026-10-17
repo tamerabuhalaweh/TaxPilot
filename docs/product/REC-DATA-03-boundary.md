@@ -96,23 +96,39 @@ Rules enforced by the design (and by the pure evaluator today):
 | 7 | Provider not in outage | `PROVIDER_OUTAGE` |
 | 8 | Verdict is a known value | `UNKNOWN_SCAN_VERDICT` |
 | 9 | Verdict is explicitly clean | `SCAN_VERDICT_NOT_CLEAN` |
-| 10 | Evidence within an approved freshness window | `STALE_SCAN_EVIDENCE` |
-| 11 | Scanned object hash + version = stored object | `INTEGRITY_MISMATCH` |
-| 12 | Engine provenance present when required | `MISSING_ENGINE_PROVENANCE` |
-| 13 | Evidence produced under current policy version | `POLICY_VERSION_MISMATCH` |
-| 14 | Release authorization present | `MISSING_RELEASE_AUTHORIZATION` |
-| 15 | Authorization binds this exact verdict | `AUTHORIZATION_BINDING_MISMATCH` |
-| 16 | Authorizing authority trusted | `UNTRUSTED_RELEASE_AUTHORITY` |
-| 17 | Scope is `extract` only | `UNSUPPORTED_RELEASE_SCOPE` |
-| 18 | Authorization not revoked | `RELEASE_REVOKED` |
-| 19 | SoD approvals satisfied when required | `INCOMPLETE_APPROVALS` |
-| 20 | Authorization not expired | `RELEASE_EXPIRED` |
+| 10 | Server time is a genuine finite number | `INVALID_SERVER_TIME` |
+| 11 | Scan timestamp is a genuine finite number | `INVALID_SCAN_EVIDENCE_TIME` |
+| 12 | Freshness window is a valid nonnegative finite int | `INVALID_POLICY_FRESHNESS` |
+| 13 | Evidence within an approved freshness window | `STALE_SCAN_EVIDENCE` |
+| 14 | Scanned object hash + version = stored object | `INTEGRITY_MISMATCH` |
+| 15 | Engine provenance present when required | `MISSING_ENGINE_PROVENANCE` |
+| 16 | Evidence produced under current policy version | `POLICY_VERSION_MISMATCH` |
+| 17 | Release authorization present | `MISSING_RELEASE_AUTHORIZATION` |
+| 18 | Authorization binds this exact verdict | `AUTHORIZATION_BINDING_MISMATCH` |
+| 19 | Authorizing authority trusted | `UNTRUSTED_RELEASE_AUTHORITY` |
+| 20 | Scope is `extract` only | `UNSUPPORTED_RELEASE_SCOPE` |
+| 21 | Authorization not revoked | `RELEASE_REVOKED` |
+| 22 | SoD approvals satisfied when required | `INCOMPLETE_APPROVALS` |
+| 23 | Authorization timestamps finite + expiry window not inverted | `INVALID_AUTHORIZATION_TIME` |
+| 24 | Authorization not expired | `RELEASE_EXPIRED` |
 
 The only path to `RELEASE_AUTHORIZED` requires a **non-default** policy object
 that only an approved configuration surface may build. Because
 `DEFAULT_RELEASE_POLICY.approved is False`, `source_released(...)` — the future
 wiring point for REC-DATA-01 registration and REC-SLICE-03 eligibility — returns
 `False` everywhere today, inheriting default-deny with no release path.
+
+### Time and freshness hardening (F1)
+
+Freshness and expiry never trust a comparison with a malformed number. Server
+time (`now`), the scan timestamp, and the authorization issue/expiry times must
+be genuine finite numbers, and the policy freshness window must be a nonnegative
+finite int. NaN, ±infinity, booleans, strings, `None`, over-large integers, and
+inverted expiry windows fail closed with the typed reasons above instead of
+slipping past `nan < 0` / `nan > x` / `nan >= x` (all false). The
+master default-deny gate (0) is evaluated first and unconditionally, so even a
+non-finite `now` cannot reach an approved-policy path.
+
 
 ## Attacker matrix this contract already refuses (unit-proven)
 
@@ -123,6 +139,7 @@ wiring point for REC-DATA-01 registration and REC-SLICE-03 eligibility — retur
 | Malware verdict (`THREATS_FOUND`) / `FAILED` / `TIMEOUT` / `UNSUPPORTED` | `SCAN_VERDICT_NOT_CLEAN` |
 | Swapped object version / hash mismatch | `INTEGRITY_MISMATCH` |
 | Stale or future-dated evidence | `STALE_SCAN_EVIDENCE` |
+| Non-finite/malformed timestamp, or inverted expiry window | `INVALID_SERVER_TIME` / `INVALID_SCAN_EVIDENCE_TIME` / `INVALID_POLICY_FRESHNESS` / `INVALID_AUTHORIZATION_TIME` |
 | Untrusted provider / authority | `UNTRUSTED_SCANNER` / `UNTRUSTED_RELEASE_AUTHORITY` |
 | Missing / revoked / expired / incompletely-approved authorization | respective refusal |
 | Any of the above with no approved policy | `RELEASE_NOT_ENABLED` |
@@ -144,6 +161,15 @@ triggers — mirroring the 0005/0008 immutability pattern. Exact columns depend 
 `DEC-S2` (provider-aware evidence) and `DEC-S1` (object version binding), so the
 DDL is intentionally not authored yet.
 
+**F2 — trusted source binding (required before persisting/enabling).** The in-memory
+`ScanEvidence` binds the object hash/version but not a tenant/client/intake
+identifier. Before evidence is persisted or release can be enabled, evidence
+rows must bind an **immutable** `(tenant_id, client_id, intake_id)` plus the exact
+object identity, enforced by server-side reads and DB constraints, so identical
+byte content across tenants can never be confused. This is recorded as a schema
+requirement for the implementation PR; it is not implemented in this no-DB slice
+and no provider is invented to satisfy it.
+
 ## Unresolved decisions to escalate (owners from the decision register)
 
 1. **DEC-S2** — scanner provider and verdict-trust model, provider-aware evidence
@@ -160,6 +186,13 @@ DDL is intentionally not authored yet.
 7. **Revocation semantics** — what revokes a release (policy change, verdict
    re-scan, admin action), and how revocation is represented without mutating
    historical evidence.
+8. **Release authorization TTL and chronology (F3)** — the current contract
+   accepts `expires_at=None` and does not yet reject a future `issued_at`; the
+   future production policy must decide a **compulsory finite release TTL**, that
+   issue time is not in the future, and scan/authorization chronological
+   consistency. Perpetual authorization is **not** silently adopted — it is
+   pending this decision. (Malformed/non-finite times and inverted
+   `expires_at < issued_at` windows already fail closed under F1.)
 
 Until these are approved, staging/production continue to refuse intake, and
 registration/eligibility continue to refuse with `SOURCE_NOT_RELEASED`.

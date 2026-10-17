@@ -142,7 +142,7 @@ def test_1_fresh_install_applies_all_versions_with_seeds():
         conn.commit()
     try:
         applied = migrate(url)
-        assert applied == ["0001", "0002", "0003", "0004", "0005", "0006"]
+        assert applied == ["0001", "0002", "0003", "0004", "0005", "0006", "0007"]
         rows = _exec(
             "SELECT code, availability FROM jurisdiction_catalog ORDER BY code"
         )
@@ -169,6 +169,7 @@ def test_1_fresh_install_applies_all_versions_with_seeds():
             "0004",
             "0005",
             "0006",
+            "0007",
         }
         for version, digest in recorded:
             assert manifest[version] == digest, version

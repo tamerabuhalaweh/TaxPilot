@@ -39,6 +39,16 @@ without provenance and an approver**; a `DRAFT` profile is inert.
 `DEFAULT_JOFOTARA_REGISTRY` is **empty** — the shipped state has no approved
 profile, so every real layout is refused.
 
+**Registry/approval trust is external, never self-granted (F2).** A
+caller-constructed registry and the approval metadata on any profile
+(`status = APPROVED`, `approved_by`, `ProfileProvenance`) are *declared claims*,
+not proof, and must not be treated as authorization for production JoFotara
+imports. Real approval requires a **trusted, independently verified profile
+registry** populated only through the profile approval gate (accounting/tax
+review + signed runtime profile). This pure module cannot confer trust, has no
+global/ambient registry, and never consults caller-supplied metadata as
+verified evidence.
+
 ### Strict recognition (`recognize_jofotara_profile`)
 
 Fail-closed, first-failure-wins reasons:
@@ -69,7 +79,13 @@ fields that do not resolve, and an approved profile lacking provenance.
   convention; it rejects non-text input (no float/int path), blanks
   (`MISSING_VALUE`, never zero), formula cells (`FORMULA_CELL`), external
   workbook references (`EXTERNAL_REFERENCE`), malformed text
-  (`MALFORMED_NUMBER`), and non-finite values.
+  (`MALFORMED_NUMBER`), and non-finite values. Separator **structure is
+  validated before any separator is removed**: the decimal separator may appear
+  at most once with trailing fraction digits, and a declared grouping separator
+  must delimit groups of exactly three digits (leading group one to three), so
+  values like `1,23`, `12,34,567`, `1,2345.6`, `1,234,56`, undeclared separators,
+  and internal whitespace are rejected — never silently corrected into a
+  different number.
 - `normalize_identifier` returns a **verbatim string** (leading zeros preserved;
   never coerced to a number); blanks and formula/external references are refused.
 - `normalize_currency` returns an explicit upper-case 3-letter code; blank is
@@ -82,7 +98,9 @@ fields that do not resolve, and an approved profile lacking provenance.
 issuer, invoice number, issue date, currency, exact net/tax/gross `Decimal`s
 (missing stays `None`, never zero), credit-note flag plus explicit
 `reference_number` (a linked record, never netted), and
-`JoFotaraRowProvenance` anchors (dataset, worksheet, row). `build_jofotara_invoice`
+`JoFotaraRowProvenance` anchors (dataset, worksheet, and a **genuine positive
+integer** row number — booleans, floats, strings, zero, and negatives are
+rejected, so evidence always points at a real data row). `build_jofotara_invoice`
 **requires** a successful recognition from an approved profile (defense in
 depth); with the empty registry it always refuses (`NOT_RECOGNIZED`). No
 net/tax/gross/credit-note meaning is asserted anywhere until an approved profile

@@ -14,6 +14,14 @@ Trust invariants:
   contains no profile; a future profile may only be registered with declared
   provenance (issuing source, authority, extraction date, redistribution
   permission) and an explicit approval.
+- **Registry/approval trust is external, never self-granted.** A
+  caller-constructed :class:`JoFotaraProfileRegistry` and any profile it holds
+  (including test/synthetic profiles) are **not** authorization. Recognition here
+  only reports whether a layout matches an *approved-declared* manifest; genuine
+  production authorization requires a trusted, independently verified registry
+  populated solely through the profile approval gate (accounting/tax review +
+  signed runtime profile). This pure module cannot confer that trust, and no
+  caller-supplied registry or approval metadata may be treated as verified.
 - **Master default-deny.** :func:`recognize_jofotara_profile` refuses when no
   approved profile matches, distinguishing "no approved profile at all",
   unsupported worksheet, unapproved (draft) profile, header drift, ambiguous
@@ -92,7 +100,6 @@ MISSING_CURRENCY = "MISSING_CURRENCY"
 NOT_RECOGNIZED = "NOT_RECOGNIZED"
 
 _CURRENCY_RE = re.compile(r"^[A-Z]{3}$")
-_MONEY_CHARS_RE = re.compile(r"^[+-]?[0-9]*\.?[0-9]+$|^[+-]?[0-9]+\.?$")
 
 
 class JoFotaraContractError(ValueError):
@@ -109,7 +116,10 @@ class ProfileProvenance:
     """Declared origin/authority of a profile's evidence (never inferred).
 
     Required for an approved profile; a profile without provenance can never be
-    treated as authorized.
+    treated as authorized. These fields are **declared claims**, not proof: a
+    caller can set them on any object, so this dataclass does not itself
+    authorize production use. Real approval requires an independently verified
+    registry and the profile approval gate.
     """
 
     issuing_source: str
@@ -208,7 +218,14 @@ class JoFotaraProfile:
 
 @dataclass(frozen=True)
 class JoFotaraProfileRegistry:
-    """Immutable set of declared profiles (default is empty / no approved profile)."""
+    """Immutable set of declared profiles (default is empty / no approved profile).
+
+    A registry is only a container of declared manifests. Constructing one — or
+    passing any registry to recognition — does **not** grant production trust;
+    genuine authorization requires a trusted, independently verified registry
+    built through the approval gate. Nothing here can self-authorize a JoFotara
+    import.
+    """
 
     profiles: tuple[JoFotaraProfile, ...] = ()
 
@@ -301,12 +318,21 @@ def normalize_currency(raw: object) -> str:
     return text
 
 
+def _all_ascii_digits(text: str) -> bool:
+    return bool(text) and all("0" <= ch <= "9" for ch in text)
+
+
 def parse_money(raw: object, money: MoneySemantics) -> Decimal:
     """Parse an exact :class:`~decimal.Decimal` under an explicit convention.
 
-    Rejects non-text input (no float path), blanks (missing, never zero),
-    formula/external-reference cells, thousands/decimal ambiguity, malformed
-    text, and non-finite values. The original ledger text is never mutated.
+    Structure is validated *before* any separator is removed, so a malformed
+    value is rejected, never silently corrected: the decimal separator may
+    appear at most once with trailing fraction digits; a declared grouping
+    separator must delimit groups of exactly three digits (the leading group may
+    hold one to three); undeclared separator characters, internal whitespace,
+    non-text input (no float path), blanks (missing, never zero),
+    formula/external-reference cells, and non-finite values are all refused.
+    The original ledger text is never mutated.
     """
     if not isinstance(raw, str):
         raise TypeError(f"money must be text, got {type(raw).__name__} (no float/int path)")
@@ -319,14 +345,40 @@ def parse_money(raw: object, money: MoneySemantics) -> Decimal:
         raise JoFotaraContractError(FORMULA_CELL, "formula cells are not accepted as amounts")
     if _has_external_reference(raw):
         raise JoFotaraContractError(EXTERNAL_REFERENCE, "external workbook references are not accepted")
-    cleaned = text.replace(" ", "")
-    if money.grouping_separator:
-        cleaned = cleaned.replace(money.grouping_separator, "")
-    cleaned = cleaned.replace(money.decimal_separator, ".")
-    if not _MONEY_CHARS_RE.match(cleaned):
+
+    sign = ""
+    if text[:1] in "+-":
+        sign, text = text[0], text[1:]
+    if not text:
         raise JoFotaraContractError(MALFORMED_NUMBER, f"unrecognized numeric value {raw!r}")
+
+    if money.decimal_separator in text:
+        parts = text.split(money.decimal_separator)
+        if len(parts) != 2 or not _all_ascii_digits(parts[1]):
+            raise JoFotaraContractError(MALFORMED_NUMBER, f"unrecognized numeric value {raw!r}")
+        int_part, frac_part = parts
+    else:
+        int_part, frac_part = text, ""
+
+    if money.grouping_separator is not None and money.grouping_separator in int_part:
+        groups = int_part.split(money.grouping_separator)
+        if (
+            not 1 <= len(groups[0]) <= 3
+            or not _all_ascii_digits(groups[0])
+            or any(len(g) != 3 or not _all_ascii_digits(g) for g in groups[1:])
+        ):
+            raise JoFotaraContractError(MALFORMED_NUMBER, f"malformed grouping in {raw!r}")
+        digits = "".join(groups)
+    else:
+        if not _all_ascii_digits(int_part):
+            raise JoFotaraContractError(MALFORMED_NUMBER, f"unrecognized numeric value {raw!r}")
+        digits = int_part
+
+    normalized = f"{sign}{digits}"
+    if frac_part:
+        normalized = f"{normalized}.{frac_part}"
     try:
-        value = Decimal(cleaned)
+        value = Decimal(normalized)
     except InvalidOperation:
         raise JoFotaraContractError(MALFORMED_NUMBER, f"unrecognized numeric value {raw!r}") from None
     if value.is_nan() or value.is_infinite():
@@ -464,6 +516,10 @@ class JoFotaraRowProvenance:
             raise ValueError("dataset_id must be non-blank")
         if not self.worksheet.strip():
             raise ValueError("worksheet must be non-blank")
+        # A genuine positive integer row: bool is an int subclass (True == 1) and
+        # floats/strings are never row anchors, so reject them explicitly.
+        if isinstance(self.row_number, bool) or not isinstance(self.row_number, int):
+            raise TypeError("row_number must be a genuine int (no bool, float, or str)")
         if self.row_number < 1:
             raise ValueError("row_number must be >= 1 (header is row 1)")
 

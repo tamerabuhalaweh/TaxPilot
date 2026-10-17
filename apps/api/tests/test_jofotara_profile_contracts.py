@@ -286,6 +286,69 @@ def test_parse_money_rejects_malformed_and_non_text() -> None:
         parse_money(1234.56, MONEY)  # no float path
 
 
+# -- F1: grouping separators are validated, never silently corrected ------------
+
+
+def test_parse_money_valid_grouping_accepted() -> None:
+    assert str(parse_money("1,234,567.89", MONEY)) == "1234567.89"
+    assert str(parse_money("1,234.50", MONEY)) == "1234.50"
+    assert str(parse_money("-1,234.50", MONEY)) == "-1234.50"
+    assert str(parse_money("12,345", MONEY)) == "12345"
+
+
+@pytest.mark.parametrize(
+    "bad",
+    ["1,23", "12,34,567", "1,2345.6", "1,,234", "1,234,56", "1,234.", ",123", "1, 234"],
+)
+def test_parse_money_rejects_malformed_grouping(bad: str) -> None:
+    # A malformed value must be rejected, not repaired into a different number.
+    with pytest.raises(JoFotaraContractError) as exc:
+        parse_money(bad, MONEY)
+    assert exc.value.code == MALFORMED_NUMBER
+
+
+def test_parse_money_rejects_undeclared_separator_and_space() -> None:
+    no_grouping = MoneySemantics(decimal_separator=".", grouping_separator=None)
+    with pytest.raises(JoFotaraContractError) as exc:
+        parse_money("1,234.56", no_grouping)
+    assert exc.value.code == MALFORMED_NUMBER
+    with pytest.raises(JoFotaraContractError) as exc:
+        parse_money("1 234.56", no_grouping)
+    assert exc.value.code == MALFORMED_NUMBER
+
+
+# -- F3: row provenance requires a genuine positive integer ---------------------
+
+
+def test_row_provenance_accepts_positive_int() -> None:
+    provenance = JoFotaraRowProvenance(dataset_id="ds-1", worksheet=WORK_SHEET, row_number=2)
+    assert provenance.row_number == 2
+
+
+@pytest.mark.parametrize("bad", [True, False, 1.5, "2", None])
+def test_row_provenance_rejects_non_int(bad: object) -> None:
+    with pytest.raises(TypeError):
+        JoFotaraRowProvenance(dataset_id="ds-1", worksheet=WORK_SHEET, row_number=bad)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("bad", [0, -1])
+def test_row_provenance_rejects_non_positive(bad: int) -> None:
+    with pytest.raises(ValueError):
+        JoFotaraRowProvenance(dataset_id="ds-1", worksheet=WORK_SHEET, row_number=bad)
+
+
+# -- F2: caller registries/approval metadata never self-authorize ---------------
+
+
+def test_caller_registry_is_explicit_and_default_stays_empty() -> None:
+    caller = _registry(_profile())
+    assert caller.approved_profiles()  # only the caller-supplied (synthetic) profile
+    # Constructing another registry never populates or mutates the shipped default.
+    assert DEFAULT_JOFOTARA_REGISTRY.approved_profiles() == ()
+    # Without an explicitly supplied registry, recognition refuses: no ambient trust.
+    assert recognize_jofotara_profile(worksheet=WORK_SHEET, headers=HEADERS).reason == NO_APPROVED_PROFILE
+
+
 def test_identifier_preserves_leading_zeros() -> None:
     assert normalize_identifier("000123") == "000123"
     with pytest.raises(JoFotaraContractError) as exc:

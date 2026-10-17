@@ -16,6 +16,8 @@ Boundary under test (issue #59, decisions A + b2):
 
 import os
 import sys
+import threading
+import time
 import uuid
 
 import pytest
@@ -167,6 +169,13 @@ def _intake(client: TestClient, client_id: str, key: str = "intake-key-1") -> di
 def _count_versions(url: str) -> int:
     with psycopg.connect(_to_libpq(url)) as conn:
         return conn.execute("SELECT count(*) FROM dataset_versions").fetchone()[0]
+
+
+def _count_versions_for_client(url: str, client_id: str) -> int:
+    with psycopg.connect(_to_libpq(url)) as conn:
+        return conn.execute(
+            "SELECT count(*) FROM dataset_versions WHERE client_id = %s", (client_id,)
+        ).fetchone()[0]
 
 
 def _insert_version(
@@ -359,6 +368,240 @@ def test_store_register_is_idempotent_and_conflicts_fail_closed(api):  # type: i
                 registration_fingerprint=FP_D,
             )
         conn.rollback()
+    finally:
+        conn.close()
+        engine.dispose()
+
+
+# -- concurrency: version allocation is serialized at the sequence scope --------
+
+
+def _reg_args(tenant_id, client_id, intake_id, *, reg_fp, source_sha=SHA_A):
+    return dict(
+        tenant_id=tenant_id,
+        client_id=client_id,
+        source_intake_id=intake_id,
+        doc_type="sales_register",
+        declared_format="csv",
+        source_content_sha256=source_sha,
+        registration_fingerprint=reg_fp,
+    )
+
+
+def test_concurrent_distinct_intakes_allocate_distinct_versions(api):  # type: ignore[no-untyped-def]
+    """F1: distinct intakes in one lineage never allocate the same version."""
+    me = _onboard(api, "concur")
+    firm_client = _make_client(api)
+    intakes = [
+        _intake(api, firm_client["id"], key=f"concur-{i}")["id"] for i in range(4)
+    ]
+    url = _scratch_or_skip()
+    from sqlalchemy import create_engine
+
+    from app.store import Store
+
+    engine = create_engine(url)
+    results: list[tuple] = []
+    lock = threading.Lock()
+    barrier = threading.Barrier(len(intakes))
+
+    def worker(idx: int, intake_id: str) -> None:
+        conn = engine.connect()
+        try:
+            store = Store(conn, tables())
+            barrier.wait(timeout=15)
+            row, created = store.register_dataset_version(
+                **_reg_args(
+                    me["tenant_id"],
+                    firm_client["id"],
+                    intake_id,
+                    reg_fp=f"{idx + 1:064d}",
+                )
+            )
+            conn.commit()
+            with lock:
+                results.append(
+                    (created, row["version"], str(row["id"]), row["parent_version_id"])
+                )
+        except Exception as exc:  # noqa: BLE001 - surfaced as a test failure below
+            conn.rollback()
+            with lock:
+                results.append(("error", repr(exc), None, None))
+        finally:
+            conn.close()
+
+    threads = [
+        threading.Thread(target=worker, args=(i, intake_id))
+        for i, intake_id in enumerate(intakes)
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+    engine.dispose()
+
+    errors = [r for r in results if r[0] == "error"]
+    assert errors == [], errors
+    assert all(r[0] is True for r in results)
+    versions = sorted(r[1] for r in results)
+    assert versions == [1, 2, 3, 4]  # distinct + monotonic, no collision
+    by_version = {r[1]: r for r in results}
+    assert by_version[1][3] is None
+    for version in (2, 3, 4):
+        assert str(by_version[version][3]) == by_version[version - 1][2]
+    assert _count_versions_for_client(url, firm_client["id"]) == 4
+
+
+def test_sequence_lock_serializes_different_intakes(api):  # type: ignore[no-untyped-def]
+    """F1: a held sequence lock blocks a *different* intake for the same lineage."""
+    me = _onboard(api, "lockseq")
+    firm_client = _make_client(api)
+    _intake(api, firm_client["id"], key="lockseq-a")
+    intake_b = _intake(api, firm_client["id"], key="lockseq-b")["id"]
+    url = _scratch_or_skip()
+    from sqlalchemy import create_engine, text
+
+    from app.store import Store
+
+    engine = create_engine(url)
+    holder = engine.connect()
+    try:
+        Store(holder, tables()).lock_dataset_sequence(
+            me["tenant_id"], firm_client["id"], "sales_register"
+        )
+        started = threading.Event()
+        done = threading.Event()
+        result: dict = {}
+
+        def worker() -> None:
+            conn = engine.connect()
+            try:
+                store = Store(conn, tables())
+                started.set()
+                row, created = store.register_dataset_version(
+                    **_reg_args(
+                        me["tenant_id"], firm_client["id"], intake_b, reg_fp=FP_B
+                    )
+                )
+                conn.commit()
+                result["version"] = row["version"]
+                result["created"] = created
+            finally:
+                conn.close()
+                done.set()
+
+        thread = threading.Thread(target=worker)
+        thread.start()
+        assert started.wait(timeout=10)
+        # Bounded wait for the second connection to register as a lock waiter.
+        waiting = False
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            with engine.connect() as probe:
+                pending = probe.execute(
+                    text(
+                        "SELECT count(*) FROM pg_locks"
+                        " WHERE locktype = 'advisory' AND NOT granted"
+                    )
+                ).scalar()
+            if pending:
+                waiting = True
+                break
+            time.sleep(0.1)
+        assert waiting, "expected a blocked advisory-lock waiter on the sequence lock"
+        assert (
+            not done.is_set()
+        ), "registration completed while the sequence lock was held"
+        holder.commit()  # release the sequence lock
+        assert done.wait(timeout=10), "registration did not proceed after lock release"
+        thread.join(timeout=10)
+        assert result == {"version": 1, "created": True}
+    finally:
+        holder.close()
+        engine.dispose()
+
+
+def test_concurrent_same_intake_replay_converges(api):  # type: ignore[no-untyped-def]
+    me = _onboard(api, "replay")
+    firm_client = _make_client(api)
+    intake_id = _intake(api, firm_client["id"], key="replay-1")["id"]
+    url = _scratch_or_skip()
+    from sqlalchemy import create_engine
+
+    from app.store import Store
+
+    engine = create_engine(url)
+    results: list = []
+    lock = threading.Lock()
+    barrier = threading.Barrier(4)
+
+    def worker() -> None:
+        conn = engine.connect()
+        try:
+            store = Store(conn, tables())
+            barrier.wait(timeout=15)
+            _, created = store.register_dataset_version(
+                **_reg_args(me["tenant_id"], firm_client["id"], intake_id, reg_fp=FP_B)
+            )
+            conn.commit()
+            with lock:
+                results.append(created)
+        except Exception as exc:  # noqa: BLE001
+            conn.rollback()
+            with lock:
+                results.append(("error", repr(exc)))
+        finally:
+            conn.close()
+
+    threads = [threading.Thread(target=worker) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+    engine.dispose()
+
+    assert [r for r in results if r == "error" or isinstance(r, tuple)] == []
+    assert results.count(True) == 1
+    assert results.count(False) == 3
+    assert _count_versions_for_client(url, firm_client["id"]) == 1
+
+
+def test_version_sequences_isolated_per_client_and_tenant(api):  # type: ignore[no-untyped-def]
+    me = _onboard(api, "iso-a")
+    client_a = _make_client(api, "Client A")
+    client_b = _make_client(api, "Client B")
+    intake_a = _intake(api, client_a["id"], key="iso-a")["id"]
+    intake_b = _intake(api, client_b["id"], key="iso-b")["id"]
+    other = TestClient(api.app, raise_server_exceptions=False)
+    tenant_b = _onboard(other, "iso-b")["tenant_id"]
+    other_client = _make_client(other, "Other Client")
+    intake_ob = _intake(other, other_client["id"], key="iso-ob")["id"]
+    url = _scratch_or_skip()
+    from sqlalchemy import create_engine
+
+    from app.store import Store
+
+    engine = create_engine(url)
+    conn = engine.connect()
+    try:
+        store = Store(conn, tables())
+        r_a, _ = store.register_dataset_version(
+            **_reg_args(me["tenant_id"], client_a["id"], intake_a, reg_fp=FP_B)
+        )
+        r_b, _ = store.register_dataset_version(
+            **_reg_args(
+                me["tenant_id"], client_b["id"], intake_b, reg_fp=FP_D, source_sha=SHA_C
+            )
+        )
+        r_ob, _ = store.register_dataset_version(
+            **_reg_args(tenant_b, other_client["id"], intake_ob, reg_fp=FP_D)
+        )
+        conn.commit()
+        # Same document type, independent scopes: each lineage starts at version 1.
+        assert (r_a["version"], r_b["version"], r_ob["version"]) == (1, 1, 1)
+        assert r_a["parent_version_id"] is None
+        assert r_b["parent_version_id"] is None
+        assert r_ob["parent_version_id"] is None
     finally:
         conn.close()
         engine.dispose()

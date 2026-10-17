@@ -35,6 +35,43 @@ A `REJECTED` intake is never registerable even if a release flag is supplied.
 The internal `Store.register_dataset_version` primitive (idempotent,
 advisory-locked) exists for REC-DATA-03 to call; it is not reachable from HTTP.
 
+## Concurrency and version allocation (F1)
+
+Version assignment is a read-then-insert of `max(version) + 1` per
+`(tenant, client, doc type)` lineage, so two registrations must never observe
+the same "latest" and allocate the same number. `Store.register_dataset_version`
+takes a **transaction-scoped advisory lock at the sequence scope**
+`dataset-seq:{tenant}:{client}:{doc_type}` — deliberately *not* the source-intake
+scope. Two different intakes for the same tenant/client/document type therefore
+queue on the same lock and allocate strictly monotonic versions; the composite
+unique constraint `(tenant, client, doc type, version)` remains the database
+backstop. Same-intake replays still converge on the existing row via the
+source-scoped idempotency check under that lock. Different tenants/clients use
+different lock keys, so their sequences stay independent.
+
+## Trusted metadata verification (before registration is activated)
+
+While registration is default-deny, the write path is unreachable, so nothing
+is at risk yet. **Before registration is activated (REC-DATA-03), every
+registration field must be verified against the trusted intake record rather
+than trusted from the request body:**
+
+- `source_intake_id`, `client_id`, and tenant must resolve to an existing
+  `document_intakes` row in the caller's scope (already enforced by the
+  composite FK and the no-oracle 404).
+- `declared_format` must be read from `document_intakes.declared_type`, never
+  accepted from the request.
+- `source_content_sha256` must be copied from the trusted
+  `document_intakes.content_sha256`, never supplied by the caller — otherwise a
+  caller could bind a version to a hash that does not match the stored bytes.
+- `parser_version` / `normalization_version`, once they exist, must come from
+  the trusted pipeline that produced the normalized dataset, not the request.
+- `source_released` must come from persisted release evidence (REC-DATA-03),
+  never from the caller.
+
+The authenticated POST must continue to derive these from trusted records; the
+request body stays a set of *references*, never proof.
+
 ## Two hashes, never substituted
 
 | Column | Meaning | When |
@@ -45,6 +82,19 @@ advisory-locked) exists for REC-DATA-03 to call; it is not reachable from HTTP.
 An absent `dataset_fingerprint` blocks any derived eligibility
 (`derive_eligibility` → `MISSING_DATASET_FINGERPRINT`); the raw source hash is
 never a substitute. Registration is **not** an eligibility certificate.
+
+## Immutable successors carry the normalized fingerprint
+
+Because existing rows are immutable (`UPDATE`/`DELETE` refused), a
+`dataset_fingerprint` can never be back-filled onto an already-registered
+version. Once the fingerprint is available (after authorized reading +
+validation + approved mapping, REC-DATA-02), it is recorded on a **new
+successor version** for the same `(tenant, client, doc type)`: the successor
+carries `version = prior + 1`, `parent_version_id = prior`, and the computed
+`dataset_fingerprint`, while every prior registration stays byte-for-byte
+unchanged as historical evidence. Lineage therefore always reflects what was
+known at each point in time, and eligibility is evaluated against the specific
+version that already carries a fingerprint — never a mutated earlier row.
 
 ## Immutability + scope (database-enforced)
 

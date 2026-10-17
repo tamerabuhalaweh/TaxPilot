@@ -1259,16 +1259,18 @@ class Store:
         return _row(row)
 
     # -- dataset versions (REC-DATA-01 client-scoped registry) -------------------
-    def lock_dataset_key(self, tenant_id: str, client_id: str, source_intake_id: str, doc_type: str) -> None:
-        """Serialize concurrent registrations sharing one source scope.
+    def lock_dataset_sequence(self, tenant_id: str, client_id: str, doc_type: str) -> None:
+        """Serialize concurrent version allocation for one lineage sequence.
 
-        Transaction-scoped advisory lock over (tenant, client, source intake,
-        document type): concurrent same-identity registrations queue here, so
-        version assignment below never doubles (intake pattern).
+        Transaction-scoped advisory lock over (tenant, client, document type) —
+        the exact scope of the version-sequence uniqueness constraint — NOT the
+        source intake. Two different intakes for the same tenant/client/document
+        type therefore queue here and can never allocate the same version; the
+        source-intake idempotency check below still converges replays.
         """
         self.conn.execute(
             text("SELECT pg_advisory_xact_lock(hashtext(:k))"),
-            {"k": f"dataset:{tenant_id}:{client_id}:{source_intake_id}:{doc_type}"},
+            {"k": f"dataset-seq:{tenant_id}:{client_id}:{doc_type}"},
         )
 
     def get_dataset_versions_by_source(
@@ -1340,6 +1342,11 @@ class Store:
     ) -> tuple[dict, bool]:
         """Idempotently register one immutable dataset version.
 
+        Version allocation is serialized by a transaction-scoped advisory lock
+        at the (tenant, client, document type) SEQUENCE scope, so distinct
+        source intakes in the same lineage can never allocate the same version;
+        the composite unique constraints remain the database backstop.
+
         Returns ``(row, created)``. Concurrent/repeated calls with the same
         identity converge on the existing row; a different identity for the
         same (source intake, document type) raises ``ValueError`` (fail closed,
@@ -1347,7 +1354,7 @@ class Store:
         authenticated POST refuses until release evidence exists, so no row is
         ever created from the API yet.
         """
-        self.lock_dataset_key(tenant_id, client_id, source_intake_id, doc_type)
+        self.lock_dataset_sequence(tenant_id, client_id, doc_type)
         existing = self.get_dataset_versions_by_source(
             tenant_id, client_id, source_intake_id, doc_type, for_update=True
         )

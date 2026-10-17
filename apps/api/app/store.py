@@ -349,6 +349,28 @@ recon_runs = Table(
     Column("created_at", DateTime(timezone=True), nullable=False),
 )
 
+# -- REC-DATA-01 client-scoped dataset-version registry (0008) -----------------
+dataset_versions = Table(
+    "dataset_versions",
+    metadata,
+    Column("id", UUID(as_uuid=True), primary_key=True),
+    Column("tenant_id", UUID(as_uuid=True), nullable=False),
+    Column("client_id", UUID(as_uuid=True), nullable=False),
+    Column("source_intake_id", UUID(as_uuid=True), nullable=False),
+    Column("doc_type", Text, nullable=False),
+    Column("declared_format", Text, nullable=False),
+    Column("version", Integer, nullable=False),
+    Column("parent_version_id", UUID(as_uuid=True)),
+    Column("source_content_sha256", Text, nullable=False),
+    Column("parser_version", Text),
+    Column("normalization_version", Text),
+    Column("mapping_revision", Text),
+    Column("dataset_fingerprint", Text),
+    Column("registration_fingerprint", Text, nullable=False),
+    Column("registered_by", UUID(as_uuid=True)),
+    Column("registered_at", DateTime(timezone=True), nullable=False),
+)
+
 TABLES: dict[str, Table] = {
     "tenants": tenants,
     "users": users,
@@ -369,6 +391,7 @@ TABLES: dict[str, Table] = {
     "engagements": engagements,
     "engagement_events": engagement_events,
     "recon_runs": recon_runs,
+    "dataset_versions": dataset_versions,
 }
 
 
@@ -1234,6 +1257,144 @@ class Store:
             .first()
         )
         return _row(row)
+
+    # -- dataset versions (REC-DATA-01 client-scoped registry) -------------------
+    def lock_dataset_key(self, tenant_id: str, client_id: str, source_intake_id: str, doc_type: str) -> None:
+        """Serialize concurrent registrations sharing one source scope.
+
+        Transaction-scoped advisory lock over (tenant, client, source intake,
+        document type): concurrent same-identity registrations queue here, so
+        version assignment below never doubles (intake pattern).
+        """
+        self.conn.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext(:k))"),
+            {"k": f"dataset:{tenant_id}:{client_id}:{source_intake_id}:{doc_type}"},
+        )
+
+    def get_dataset_versions_by_source(
+        self,
+        tenant_id: str,
+        client_id: str,
+        source_intake_id: str,
+        doc_type: str,
+        for_update: bool = False,
+    ) -> list[dict]:
+        query = (
+            select(self.t["dataset_versions"])
+            .where(self.t["dataset_versions"].c.tenant_id == tenant_id)
+            .where(self.t["dataset_versions"].c.client_id == client_id)
+            .where(self.t["dataset_versions"].c.source_intake_id == source_intake_id)
+            .where(self.t["dataset_versions"].c.doc_type == doc_type)
+            .order_by(self.t["dataset_versions"].c.version)
+        )
+        if for_update:
+            query = query.with_for_update()
+        return [_row(r) for r in self.conn.execute(query).mappings().all()]
+
+    def get_dataset_version(self, version_id: str, tenant_id: str) -> dict | None:
+        row = (
+            self.conn.execute(
+                select(self.t["dataset_versions"])
+                .where(self.t["dataset_versions"].c.id == version_id)
+                .where(self.t["dataset_versions"].c.tenant_id == tenant_id)
+            )
+            .mappings()
+            .first()
+        )
+        return _row(row) if row else None
+
+    def list_dataset_versions(
+        self,
+        tenant_id: str,
+        client_id: str | None = None,
+        doc_type: str | None = None,
+        limit: int = 100,
+    ) -> list[dict]:
+        query = select(self.t["dataset_versions"]).where(self.t["dataset_versions"].c.tenant_id == tenant_id)
+        if client_id is not None:
+            query = query.where(self.t["dataset_versions"].c.client_id == client_id)
+        if doc_type is not None:
+            query = query.where(self.t["dataset_versions"].c.doc_type == doc_type)
+        rows = (
+            self.conn.execute(query.order_by(self.t["dataset_versions"].c.registered_at.desc()).limit(limit))
+            .mappings()
+            .all()
+        )
+        return [_row(r) for r in rows]
+
+    def register_dataset_version(
+        self,
+        *,
+        tenant_id: str,
+        client_id: str,
+        source_intake_id: str,
+        doc_type: str,
+        declared_format: str,
+        source_content_sha256: str,
+        registration_fingerprint: str,
+        parser_version: str | None = None,
+        normalization_version: str | None = None,
+        mapping_revision: str | None = None,
+        dataset_fingerprint: str | None = None,
+        registered_by: str | None = None,
+    ) -> tuple[dict, bool]:
+        """Idempotently register one immutable dataset version.
+
+        Returns ``(row, created)``. Concurrent/repeated calls with the same
+        identity converge on the existing row; a different identity for the
+        same (source intake, document type) raises ``ValueError`` (fail closed,
+        never overwrite). This is the internal persistence primitive: the
+        authenticated POST refuses until release evidence exists, so no row is
+        ever created from the API yet.
+        """
+        self.lock_dataset_key(tenant_id, client_id, source_intake_id, doc_type)
+        existing = self.get_dataset_versions_by_source(
+            tenant_id, client_id, source_intake_id, doc_type, for_update=True
+        )
+        if existing:
+            if existing[0]["registration_fingerprint"] == registration_fingerprint:
+                return existing[0], False
+            raise ValueError("dataset version identity conflict for this source intake and document type")
+        latest = (
+            self.conn.execute(
+                select(self.t["dataset_versions"])
+                .where(self.t["dataset_versions"].c.tenant_id == tenant_id)
+                .where(self.t["dataset_versions"].c.client_id == client_id)
+                .where(self.t["dataset_versions"].c.doc_type == doc_type)
+                .order_by(self.t["dataset_versions"].c.version.desc())
+                .limit(1)
+            )
+            .mappings()
+            .first()
+        )
+        version = (latest["version"] + 1) if latest else 1
+        parent_version_id = latest["id"] if latest else None
+        row = (
+            self.conn.execute(
+                insert(self.t["dataset_versions"])
+                .values(
+                    id=uuid.uuid4(),
+                    tenant_id=tenant_id,
+                    client_id=client_id,
+                    source_intake_id=source_intake_id,
+                    doc_type=doc_type,
+                    declared_format=declared_format,
+                    version=version,
+                    parent_version_id=parent_version_id,
+                    source_content_sha256=source_content_sha256,
+                    parser_version=parser_version,
+                    normalization_version=normalization_version,
+                    mapping_revision=mapping_revision,
+                    dataset_fingerprint=dataset_fingerprint,
+                    registration_fingerprint=registration_fingerprint,
+                    registered_by=registered_by,
+                )
+                .returning(self.t["dataset_versions"])
+            )
+            .mappings()
+            .first()
+        )
+        return _row(row), True
 
 
 def session_expiry(hours: int = 24) -> datetime:

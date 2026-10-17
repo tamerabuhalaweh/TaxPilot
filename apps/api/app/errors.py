@@ -36,6 +36,7 @@ _STATUS_BY_CODE = {
     "TAX_PROFILE_UNVERIFIED": 422,
     "PACK_NOT_APPROVED": 409,
     "CROSS_ENTITY_SCOPE_CONFLICT": 409,
+    "SOURCE_NOT_RELEASED": 409,  # REC-DATA-01: default-deny until release evidence exists
 }
 
 

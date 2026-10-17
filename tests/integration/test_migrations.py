@@ -76,6 +76,7 @@ def test_migration_discovery_exact_and_ordered():
         "0005_document_intakes.sql",
         "0006_extraction_jobs.sql",
         "0007_rec_engagements.sql",
+        "0008_dataset_versions.sql",
     ]
 
 
@@ -99,7 +100,16 @@ def test_first_migration_applies_and_rerun_is_noop():
     url = _destructive_or_skip()
     with psycopg.connect(_to_libpq(url), connect_timeout=5) as conn:
         conn.execute("DROP TABLE IF EXISTS schema_migrations")
-    assert migrate(url) == ["0001", "0002", "0003", "0004", "0005", "0006", "0007"]
+    assert migrate(url) == [
+        "0001",
+        "0002",
+        "0003",
+        "0004",
+        "0005",
+        "0006",
+        "0007",
+        "0008",
+    ]
     assert migrate(url) == []
 
 

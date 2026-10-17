@@ -4,7 +4,7 @@ Independent foundation work proceeds; these restrict production readiness, not t
 
 | # | Blocker | Restricts | Status |
 |---|---|---|---|
-| B-01 | Representative JoFotara exports (authorized) | Import profiles, REC fixtures, format support claims | OPEN — no samples in repo |
+| B-01 | Representative JoFotara exports (authorized) | Import profiles, REC fixtures, format support claims | OPEN — no samples in repo; REC-JOFO-01 delivered a fail-closed profile foundation only (no layout enabled, DEC-10 still OPEN) |
 | B-02 | Representative Sales Register files | Same as B-01 | OPEN |
 | B-03 | Representative General Ledger files | Same as B-01 | OPEN |
 | B-04 | Tax-domain expert engagement + rule approval | Any TX rule, REC legal interpretation, pack activation | OPEN |

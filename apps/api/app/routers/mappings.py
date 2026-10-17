@@ -199,6 +199,12 @@ def get_mapping_approval(
                 normalization_version=proposal_row["normalization_version"],
                 canonical_schema_version=proposal_row["canonical_schema_version"],
                 engagement_revision=proposal_row["engagement_revision"],
+                # ``confirmed`` here only says the persisted row is an explicit
+                # human-authored field map; it is NOT authoritative human
+                # confirmation and MUST NOT unlock the approval gate. The gate
+                # additionally requires trusted headers and a server-verified
+                # reviewer-authorization fact, neither of which this read path
+                # can supply — so the derived status stays default-deny.
                 confirmed=True,
             )
         coordinates = ApprovalCoordinates(
@@ -214,6 +220,9 @@ def get_mapping_approval(
             coordinates=coordinates,
             trusted_headers=None,
             approval_enabled=APPROVAL_ENABLED,
+            # No server-verified reviewer-authorization fact exists yet, so the
+            # reviewer-trust gate stays closed in addition to the master gate.
+            reviewer_authorization=None,
         )
         return MappingApprovalOut(
             dataset_version_id=vid,

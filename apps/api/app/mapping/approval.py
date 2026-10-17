@@ -16,11 +16,29 @@ Design invariants (issue #63):
   headers (the current state — extraction/read is blocked) refuses with
   ``SOURCE_HEADERS_UNAVAILABLE``.
 - **Approval = latest human decision.** An explicit APPROVED review decision by a
-  verified reviewer is required; a proposal is only a proposal, and a later
-  REJECTED/SUPERSEDED decision wins.
+  server-verified authorized reviewer is required; a proposal is only a proposal,
+  and a later REJECTED/SUPERSEDED decision wins.
+- **Decisions are bound to the exact proposal.** Every decision must carry the
+  selected proposal's ``tenant_id`` and ``proposal_id``; any foreign or
+  mixed-scope decision (including a foreign APPROVED) fails closed and can never
+  authorize the mapping.
+- **Reviewer trust is a server-verified fact.** A nonempty ``reviewer_id`` proves
+  nothing; the happy path additionally requires a
+  :class:`ReviewerAuthorization` fact (the set of reviewer ids verified as active
+  authorized reviewers for the scope, constructed by a trusted writer from
+  authoritative membership/role records, never from caller input). When that fact
+  is absent, approval is refused (explicit default-deny).
 - **Staleness is derived, never rewritten.** A change to the dataset version,
   header shape, mapping/normalization/schema version, or engagement revision
   makes any prior approval stale.
+
+Trusted-writer contract (integration dependency, F3). This pure contract cannot
+verify persisted facts, so any trusted writer that creates proposal evidence
+MUST bind, server-side against authoritative records: ``doc_type`` must equal the
+referenced ``dataset_versions.doc_type`` (the table only enforces a vocabulary
+CHECK, not this equality), and ``engagement_revision`` must be read from the
+engagement's persisted revision (a stored proposal value is an assertion, not
+proof). Until that wiring exists, approval stays default-deny.
 """
 
 from __future__ import annotations
@@ -60,6 +78,8 @@ MISSING_APPROVAL = "MISSING_APPROVAL"
 MAPPING_REJECTED = "MAPPING_REJECTED"
 MAPPING_SUPERSEDED = "MAPPING_SUPERSEDED"
 UNTRUSTED_REVIEWER = "UNTRUSTED_REVIEWER"
+FOREIGN_DECISION_TENANT = "FOREIGN_DECISION_TENANT"
+FOREIGN_DECISION_PROPOSAL = "FOREIGN_DECISION_PROPOSAL"
 
 
 @dataclass(frozen=True)
@@ -114,6 +134,23 @@ class MappingDecision:
     reviewer_id: str = ""
     decided_at: str = ""
     reason: str = ""
+
+
+@dataclass(frozen=True)
+class ReviewerAuthorization:
+    """Server-verified reviewer-authorization fact (NOT caller input).
+
+    A nonempty ``reviewer_id`` on a decision is only an identifier; this fact is
+    the authoritative statement that a specific reviewer is an active, authorized
+    reviewer for the scope, and must be constructed by a trusted writer from
+    membership/role records. Its absence means verification is unavailable and
+    approval is refused.
+    """
+
+    authorized_reviewer_ids: frozenset[str]
+
+    def authorizes(self, reviewer_id: str) -> bool:
+        return bool(reviewer_id) and reviewer_id in self.authorized_reviewer_ids
 
 
 @dataclass(frozen=True)
@@ -189,11 +226,15 @@ def evaluate_mapping_approval(
     coordinates: ApprovalCoordinates,
     trusted_headers: Sequence[str] | None,
     approval_enabled: bool = False,
+    reviewer_authorization: ReviewerAuthorization | None = None,
 ) -> ApprovalOutcome:
     """Default-deny mapping-approval gate (pure; first failure wins).
 
     The header fingerprint is derived from ``trusted_headers``; when they are
     unavailable (no trusted source-header attestation yet), approval is refused.
+    A decision only counts when it is bound to the selected proposal's exact
+    (tenant, proposal) scope and its reviewer is covered by the server-verified
+    ``reviewer_authorization`` fact; otherwise the gate stays closed.
     """
     if not approval_enabled:
         return ApprovalOutcome(False, MAPPING_APPROVAL_NOT_ENABLED)
@@ -221,6 +262,13 @@ def evaluate_mapping_approval(
     )
     if not report.ok:
         return ApprovalOutcome(False, INVALID_MAPPING, tuple(i.code for i in report.issues))
+    # Fail closed on any decision that is not bound to the exact selected
+    # proposal: a foreign or mixed-scope APPROVED decision must never authorize.
+    for candidate in decisions:
+        if candidate.tenant_id != proposal.tenant_id:
+            return ApprovalOutcome(False, FOREIGN_DECISION_TENANT)
+        if candidate.proposal_id != proposal.proposal_id:
+            return ApprovalOutcome(False, FOREIGN_DECISION_PROPOSAL)
     decision = latest_decision(decisions)
     if decision is None:
         return ApprovalOutcome(False, MISSING_APPROVAL)
@@ -230,6 +278,6 @@ def evaluate_mapping_approval(
         return ApprovalOutcome(False, MAPPING_SUPERSEDED)
     if decision.decision != DECISION_APPROVED:
         return ApprovalOutcome(False, MISSING_APPROVAL)
-    if not decision.reviewer_id:
+    if reviewer_authorization is None or not reviewer_authorization.authorizes(decision.reviewer_id):
         return ApprovalOutcome(False, UNTRUSTED_REVIEWER)
     return ApprovalOutcome(True, APPROVED)

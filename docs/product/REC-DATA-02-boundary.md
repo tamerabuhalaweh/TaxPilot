@@ -75,13 +75,59 @@ a fixed harm-first order:
    `STALE_MAPPING_VERSION`, `STALE_NORMALIZATION_VERSION`,
    `STALE_SCHEMA_VERSION`, `STALE_ENGAGEMENT_REVISION`.
 7. `INVALID_MAPPING` — the map fails canonical validation.
-8. `MISSING_APPROVAL` / `MAPPING_REJECTED` / `MAPPING_SUPERSEDED` — latest
+8. Decision scope binding: `FOREIGN_DECISION_TENANT` / `FOREIGN_DECISION_PROPOSAL`
+   — any decision not bound to the selected proposal's exact `(tenant_id,
+   proposal_id)` fails closed (a foreign or mixed-scope APPROVED can never
+   authorize).
+9. `MISSING_APPROVAL` / `MAPPING_REJECTED` / `MAPPING_SUPERSEDED` — latest
    decision by `(decided_at, decision_id)`.
-9. `UNTRUSTED_REVIEWER` — reviewer outside the trusted set.
-10. `APPROVED` — only when every gate above passes and approval is enabled.
+10. `UNTRUSTED_REVIEWER` — no server-verified reviewer-authorization fact, or the
+    decision's reviewer is not covered by it.
+11. `APPROVED` — only when every gate above passes and approval is enabled.
 
 AI-suggested maps (`normalization/suggest.py`) are **advisory only** and can
 never become approval evidence. Caller-provided fingerprints are never trusted.
+
+## Decision-to-proposal binding (F1)
+
+Approval can never be granted by a decision that belongs to another proposal or
+tenant. `evaluate_mapping_approval` iterates the supplied decisions and refuses
+(`FOREIGN_DECISION_TENANT` / `FOREIGN_DECISION_PROPOSAL`) if **any** decision's
+`tenant_id` or `proposal_id` does not equal the selected proposal's. Mixed
+valid + foreign decision sets fail closed regardless of ordering, so a scoped
+database read is not the only thing preventing cross-tenant/cross-proposal
+escalation — the pure, reusable contract is itself fail-closed. The master
+default-deny gate remains first, independent of decision scope.
+
+## Reviewer trust is a server-verified fact (F2)
+
+A nonempty `reviewer_id` on a decision is only an identifier and proves no
+authorization. The happy path additionally requires a `ReviewerAuthorization`
+fact — the set of reviewer ids the trusted writer has verified as active,
+authorized reviewers for the scope, constructed from authoritative
+membership/role records and never from caller input. When that fact is absent
+(always, today), approval is refused (`UNTRUSTED_REVIEWER`): an explicit
+default-deny rather than trusting a bare string.
+
+The read projection in `routers/mappings.py` sets `MappingProposal.confirmed =
+True` to mean only that the persisted row is an explicit human-authored field
+map. It is **not** authoritative human confirmation and must never be used to
+unlock the gate; the read path supplies neither trusted headers nor an
+authorization fact, so the derived status stays default-deny even if
+`APPROVAL_ENABLED` were flipped.
+
+## Trusted-writer integrity (F3, integration dependency)
+
+This pure contract cannot verify persisted facts, so any future trusted writer
+that creates proposal evidence MUST bind, server-side against authoritative
+records before inserting a row:
+
+- `doc_type` must equal the referenced `dataset_versions.doc_type`. The 0009
+  table enforces only a vocabulary CHECK; it does **not** assert equality with
+  the dataset version, so the writer must enforce it.
+- `engagement_revision` must be read from the engagement's persisted revision.
+  A stored `engagement_revision` is a proposal assertion, not proof, and must not
+  be trusted from the request body.
 
 ## Immutability + scope (database-enforced)
 

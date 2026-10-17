@@ -17,6 +17,8 @@ from app.mapping import (
     DECISION_APPROVED,
     DECISION_REJECTED,
     DECISION_SUPERSEDED,
+    FOREIGN_DECISION_PROPOSAL,
+    FOREIGN_DECISION_TENANT,
     INVALID_MAPPING,
     MAPPING_APPROVAL_NOT_ENABLED,
     MAPPING_REJECTED,
@@ -36,6 +38,7 @@ from app.mapping import (
     ApprovalCoordinates,
     MappingDecision,
     MappingProposal,
+    ReviewerAuthorization,
     evaluate_mapping_approval,
     latest_decision,
     proposal_fingerprint,
@@ -123,6 +126,10 @@ def _decision(decision: str, **overrides: object) -> MappingDecision:
     return MappingDecision(**base)
 
 
+def _authorization(*reviewers: str) -> ReviewerAuthorization:
+    return ReviewerAuthorization(frozenset(reviewers or ("u-reviewer",)))
+
+
 def _eval(**overrides: object):  # type: ignore[no-untyped-def]
     kwargs: dict = {
         "proposal": _proposal(),
@@ -130,6 +137,7 @@ def _eval(**overrides: object):  # type: ignore[no-untyped-def]
         "coordinates": _coords(),
         "trusted_headers": EN_HEADERS,
         "approval_enabled": True,
+        "reviewer_authorization": _authorization(),
     }
     kwargs.update(overrides)
     return evaluate_mapping_approval(**kwargs)
@@ -263,6 +271,66 @@ def test_latest_decision_wins() -> None:
 def test_untrusted_reviewer_refused() -> None:
     outcome = _eval(decisions=(_decision(DECISION_APPROVED, reviewer_id=""),))
     assert outcome.reason == UNTRUSTED_REVIEWER
+
+
+# -- decisions must be bound to the exact proposal (F1) --------------------------
+
+
+def test_foreign_tenant_approved_decision_cannot_authorize() -> None:
+    outcome = _eval(decisions=(_decision(DECISION_APPROVED, tenant_id="t-2"),))
+    assert (outcome.approved, outcome.reason) == (False, FOREIGN_DECISION_TENANT)
+
+
+def test_foreign_proposal_approved_decision_cannot_authorize() -> None:
+    outcome = _eval(decisions=(_decision(DECISION_APPROVED, proposal_id="p-2"),))
+    assert (outcome.approved, outcome.reason) == (False, FOREIGN_DECISION_PROPOSAL)
+
+
+def test_mixed_valid_and_foreign_decisions_fail_closed() -> None:
+    valid = _decision(DECISION_APPROVED, decision_id="d-1", decided_at="2026-01-01T00:00:00Z")
+    foreign_tenant = _decision(
+        DECISION_APPROVED, decision_id="d-2", tenant_id="t-2", decided_at="2026-01-02T00:00:00Z"
+    )
+    foreign_proposal = _decision(
+        DECISION_APPROVED, decision_id="d-3", proposal_id="p-9", decided_at="2026-01-03T00:00:00Z"
+    )
+    # A foreign APPROVED cannot be "won" by a valid one, whichever is latest.
+    mixed = _eval(decisions=(valid, foreign_tenant))
+    assert (mixed.approved, mixed.reason) == (False, FOREIGN_DECISION_TENANT)
+    mixed = _eval(decisions=(foreign_tenant, valid))
+    assert mixed.approved is False
+    mixed = _eval(decisions=(valid, foreign_proposal))
+    assert (mixed.approved, mixed.reason) == (False, FOREIGN_DECISION_PROPOSAL)
+
+
+def test_master_gate_precedes_foreign_decisions() -> None:
+    # Default-deny master gate stays first, independent of decision scope.
+    outcome = _eval(approval_enabled=False, decisions=(_decision(DECISION_APPROVED, tenant_id="t-2"),))
+    assert (outcome.approved, outcome.reason) == (False, MAPPING_APPROVAL_NOT_ENABLED)
+
+
+# -- reviewer trust is a server-verified fact, not a nonempty id (F2) ------------
+
+
+def test_nonempty_reviewer_without_authorization_fact_refused() -> None:
+    outcome = _eval(reviewer_authorization=None)
+    assert (outcome.approved, outcome.reason) == (False, UNTRUSTED_REVIEWER)
+
+
+def test_nonempty_but_untrusted_reviewer_refused() -> None:
+    outcome = _eval(
+        decisions=(_decision(DECISION_APPROVED, reviewer_id="u-stranger"),),
+        reviewer_authorization=_authorization("u-reviewer"),
+    )
+    assert (outcome.approved, outcome.reason) == (False, UNTRUSTED_REVIEWER)
+
+
+def test_authorized_reviewer_approves() -> None:
+    outcome = _eval(
+        decisions=(_decision(DECISION_APPROVED, reviewer_id="u-ok"),),
+        reviewer_authorization=_authorization("u-ok"),
+    )
+    assert (outcome.approved, outcome.reason) == (True, APPROVED)
 
 
 def test_latest_decision_deterministic_on_ties() -> None:

@@ -19,6 +19,7 @@ from .routers.datasets import router as datasets_router
 from .routers.engagements import router as engagements_router
 from .routers.health import router as health_router
 from .routers.intakes import router as intakes_router
+from .routers.mappings import router as mappings_router
 from .routers.workspace import router as workspace_router
 
 log = logging.getLogger(__name__)
@@ -63,6 +64,7 @@ def create_app() -> FastAPI:
     app.include_router(intakes_router, prefix=settings.api_v1_prefix)
     app.include_router(engagements_router, prefix=settings.api_v1_prefix)
     app.include_router(datasets_router, prefix=settings.api_v1_prefix)
+    app.include_router(mappings_router, prefix=settings.api_v1_prefix)
 
     @app.get("/health", include_in_schema=False)
     def _root_health() -> dict[str, str]:

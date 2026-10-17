@@ -667,9 +667,9 @@ def test_scoped_keys_reject_spoofed_lineage(api):  # type: ignore[no-untyped-def
 # -- migration census + schema parity ------------------------------------------
 
 
-def test_migration_census_includes_0008(api):  # type: ignore[no-untyped-def]
+def test_migration_census_includes_latest(api):  # type: ignore[no-untyped-def]
     _onboard(api, "census")
-    assert [p.name for p in discover()][-1] == "0008_dataset_versions.sql"
+    assert [p.name for p in discover()][-1] == "0009_mapping_approvals.sql"
 
 
 def test_schema_matches_definitions(api):  # type: ignore[no-untyped-def]

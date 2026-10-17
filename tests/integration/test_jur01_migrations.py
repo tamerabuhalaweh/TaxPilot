@@ -151,6 +151,7 @@ def test_1_fresh_install_applies_all_versions_with_seeds():
             "0006",
             "0007",
             "0008",
+            "0009",
         ]
         rows = _exec(
             "SELECT code, availability FROM jurisdiction_catalog ORDER BY code"
@@ -180,6 +181,7 @@ def test_1_fresh_install_applies_all_versions_with_seeds():
             "0006",
             "0007",
             "0008",
+            "0009",
         }
         for version, digest in recorded:
             assert manifest[version] == digest, version

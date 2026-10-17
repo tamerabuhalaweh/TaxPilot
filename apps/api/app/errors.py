@@ -37,6 +37,8 @@ _STATUS_BY_CODE = {
     "PACK_NOT_APPROVED": 409,
     "CROSS_ENTITY_SCOPE_CONFLICT": 409,
     "SOURCE_NOT_RELEASED": 409,  # REC-DATA-01: default-deny until release evidence exists
+    "SOURCE_HEADERS_UNAVAILABLE": 409,  # REC-DATA-02: no trusted source-header attestation
+    "MAPPING_APPROVAL_NOT_ENABLED": 409,  # REC-DATA-02: mapping approval default-deny
 }
 
 

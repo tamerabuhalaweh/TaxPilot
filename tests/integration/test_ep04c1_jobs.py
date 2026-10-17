@@ -152,8 +152,9 @@ def test_fresh_install_applies_all_with_checksums():
             "0006",
             "0007",
             "0008",
+            "0009",
         ]
-        assert [p.name for p in discover()][-1] == "0008_dataset_versions.sql"
+        assert [p.name for p in discover()][-1] == "0009_mapping_approvals.sql"
         manifest = load_checksums()
         recorded = {
             r[0]: r[1]
@@ -170,6 +171,7 @@ def test_fresh_install_applies_all_with_checksums():
             "0006",
             "0007",
             "0008",
+            "0009",
         }
         for version, digest in recorded.items():
             assert manifest[version] == digest, version

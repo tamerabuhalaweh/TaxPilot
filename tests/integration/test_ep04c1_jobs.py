@@ -143,8 +143,17 @@ def test_fresh_install_applies_all_with_checksums():
         conn.execute("CREATE SCHEMA public")
         conn.commit()
     try:
-        assert migrate(url) == ["0001", "0002", "0003", "0004", "0005", "0006", "0007"]
-        assert [p.name for p in discover()][-1] == "0007_rec_engagements.sql"
+        assert migrate(url) == [
+            "0001",
+            "0002",
+            "0003",
+            "0004",
+            "0005",
+            "0006",
+            "0007",
+            "0008",
+        ]
+        assert [p.name for p in discover()][-1] == "0008_dataset_versions.sql"
         manifest = load_checksums()
         recorded = {
             r[0]: r[1]
@@ -152,7 +161,16 @@ def test_fresh_install_applies_all_with_checksums():
             .execute("SELECT version, sha256 FROM schema_migrations")
             .fetchall()
         }
-        assert set(recorded) == {"0001", "0002", "0003", "0004", "0005", "0006", "0007"}
+        assert set(recorded) == {
+            "0001",
+            "0002",
+            "0003",
+            "0004",
+            "0005",
+            "0006",
+            "0007",
+            "0008",
+        }
         for version, digest in recorded.items():
             assert manifest[version] == digest, version
         from sqlalchemy import create_engine

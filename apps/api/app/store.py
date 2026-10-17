@@ -371,6 +371,43 @@ dataset_versions = Table(
     Column("registered_at", DateTime(timezone=True), nullable=False),
 )
 
+# -- REC-DATA-02 human-confirmed mapping proposals + approval evidence (0009) --
+mapping_proposals = Table(
+    "mapping_proposals",
+    metadata,
+    Column("id", UUID(as_uuid=True), primary_key=True),
+    Column("tenant_id", UUID(as_uuid=True), nullable=False),
+    Column("client_id", UUID(as_uuid=True), nullable=False),
+    Column("engagement_id", UUID(as_uuid=True), nullable=False),
+    Column("dataset_version_id", UUID(as_uuid=True), nullable=False),
+    Column("doc_type", Text, nullable=False),
+    Column("header_fingerprint", Text, nullable=False),
+    Column("field_map", JSONB, nullable=False),
+    Column("mapping_version", Text, nullable=False),
+    Column("normalization_version", Text, nullable=False),
+    Column("canonical_schema_version", Text, nullable=False),
+    Column("engagement_revision", Integer, nullable=False),
+    Column("proposal_fingerprint", Text, nullable=False),
+    Column("proposed_by", UUID(as_uuid=True)),
+    Column("proposed_at", DateTime(timezone=True), nullable=False),
+)
+
+mapping_decisions = Table(
+    "mapping_decisions",
+    metadata,
+    Column("id", UUID(as_uuid=True), primary_key=True),
+    Column("tenant_id", UUID(as_uuid=True), nullable=False),
+    Column("client_id", UUID(as_uuid=True), nullable=False),
+    Column("engagement_id", UUID(as_uuid=True), nullable=False),
+    Column("proposal_id", UUID(as_uuid=True), nullable=False),
+    Column("dataset_version_id", UUID(as_uuid=True), nullable=False),
+    Column("decision", Text, nullable=False),
+    Column("reviewer_id", UUID(as_uuid=True)),
+    Column("reason", Text),
+    Column("idempotency_key", Text, nullable=False),
+    Column("decided_at", DateTime(timezone=True), nullable=False),
+)
+
 TABLES: dict[str, Table] = {
     "tenants": tenants,
     "users": users,
@@ -392,6 +429,8 @@ TABLES: dict[str, Table] = {
     "engagement_events": engagement_events,
     "recon_runs": recon_runs,
     "dataset_versions": dataset_versions,
+    "mapping_proposals": mapping_proposals,
+    "mapping_decisions": mapping_decisions,
 }
 
 
@@ -1402,6 +1441,231 @@ class Store:
             .first()
         )
         return _row(row), True
+
+    # -- mapping proposals + decisions (REC-DATA-02 approval evidence) -----------
+    def lock_mapping_key(
+        self, tenant_id: str, engagement_id: str, dataset_version_id: str, identity: str
+    ) -> None:
+        """Serialize concurrent writers sharing one proposal identity.
+
+        Transaction-scoped advisory lock over (tenant, engagement, dataset
+        version, identity): concurrent same-identity submissions queue here, so
+        the check-then-insert below never doubles (intake/dataset pattern).
+        """
+        self.conn.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext(:k))"),
+            {"k": (f"mapping-proposal:{tenant_id}:{engagement_id}:" f"{dataset_version_id}:{identity}")},
+        )
+
+    def get_mapping_proposals_by_fingerprint(
+        self,
+        tenant_id: str,
+        engagement_id: str,
+        dataset_version_id: str,
+        proposal_fingerprint: str,
+        for_update: bool = False,
+    ) -> list[dict]:
+        query = (
+            select(self.t["mapping_proposals"])
+            .where(self.t["mapping_proposals"].c.tenant_id == tenant_id)
+            .where(self.t["mapping_proposals"].c.engagement_id == engagement_id)
+            .where(self.t["mapping_proposals"].c.dataset_version_id == dataset_version_id)
+            .where(self.t["mapping_proposals"].c.proposal_fingerprint == proposal_fingerprint)
+            .order_by(self.t["mapping_proposals"].c.proposed_at)
+        )
+        if for_update:
+            query = query.with_for_update()
+        return [_row(r) for r in self.conn.execute(query).mappings().all()]
+
+    def create_mapping_proposal(
+        self,
+        *,
+        tenant_id: str,
+        client_id: str,
+        engagement_id: str,
+        dataset_version_id: str,
+        doc_type: str,
+        header_fingerprint: str,
+        field_map: dict,
+        mapping_version: str,
+        normalization_version: str,
+        canonical_schema_version: str,
+        engagement_revision: int,
+        proposal_fingerprint: str,
+        proposed_by: str | None = None,
+    ) -> tuple[dict, bool]:
+        """Idempotently append one immutable mapping proposal.
+
+        Serialized by a transaction-scoped advisory lock at the proposal
+        identity scope; the composite unique constraints are the DB backstop.
+        Returns ``(row, created)``. Replaying the same identity converges; a
+        different fingerprint for the same (engagement, dataset version) is a
+        distinct revision, never an overwrite of history.
+        """
+        self.lock_mapping_key(tenant_id, engagement_id, dataset_version_id, proposal_fingerprint)
+        existing = self.get_mapping_proposals_by_fingerprint(
+            tenant_id, engagement_id, dataset_version_id, proposal_fingerprint, for_update=True
+        )
+        if existing:
+            return existing[0], False
+        row = (
+            self.conn.execute(
+                insert(self.t["mapping_proposals"])
+                .values(
+                    id=uuid.uuid4(),
+                    tenant_id=tenant_id,
+                    client_id=client_id,
+                    engagement_id=engagement_id,
+                    dataset_version_id=dataset_version_id,
+                    doc_type=doc_type,
+                    header_fingerprint=header_fingerprint,
+                    field_map=field_map,
+                    mapping_version=mapping_version,
+                    normalization_version=normalization_version,
+                    canonical_schema_version=canonical_schema_version,
+                    engagement_revision=engagement_revision,
+                    proposal_fingerprint=proposal_fingerprint,
+                    proposed_by=proposed_by,
+                )
+                .returning(self.t["mapping_proposals"])
+            )
+            .mappings()
+            .first()
+        )
+        return _row(row), True
+
+    def get_mapping_proposal(self, proposal_id: str, tenant_id: str) -> dict | None:
+        row = (
+            self.conn.execute(
+                select(self.t["mapping_proposals"])
+                .where(self.t["mapping_proposals"].c.id == proposal_id)
+                .where(self.t["mapping_proposals"].c.tenant_id == tenant_id)
+            )
+            .mappings()
+            .first()
+        )
+        return _row(row) if row else None
+
+    def list_mapping_proposals(self, tenant_id: str, engagement_id: str) -> list[dict]:
+        rows = (
+            self.conn.execute(
+                select(self.t["mapping_proposals"])
+                .where(self.t["mapping_proposals"].c.tenant_id == tenant_id)
+                .where(self.t["mapping_proposals"].c.engagement_id == engagement_id)
+                .order_by(self.t["mapping_proposals"].c.proposed_at)
+            )
+            .mappings()
+            .all()
+        )
+        return [_row(r) for r in rows]
+
+    def lock_decision_key(self, tenant_id: str, engagement_id: str, proposal_id: str, key: str) -> None:
+        """Serialize concurrent decisions sharing one idempotency key."""
+        self.conn.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext(:k))"),
+            {"k": f"mapping-decision:{tenant_id}:{engagement_id}:{proposal_id}:{key}"},
+        )
+
+    def get_mapping_decisions_by_key(
+        self,
+        tenant_id: str,
+        engagement_id: str,
+        proposal_id: str,
+        key: str,
+        for_update: bool = False,
+    ) -> list[dict]:
+        query = (
+            select(self.t["mapping_decisions"])
+            .where(self.t["mapping_decisions"].c.tenant_id == tenant_id)
+            .where(self.t["mapping_decisions"].c.engagement_id == engagement_id)
+            .where(self.t["mapping_decisions"].c.proposal_id == proposal_id)
+            .where(self.t["mapping_decisions"].c.idempotency_key == key)
+            .order_by(self.t["mapping_decisions"].c.decided_at)
+        )
+        if for_update:
+            query = query.with_for_update()
+        return [_row(r) for r in self.conn.execute(query).mappings().all()]
+
+    def create_mapping_decision(
+        self,
+        *,
+        tenant_id: str,
+        client_id: str,
+        engagement_id: str,
+        proposal_id: str,
+        dataset_version_id: str,
+        decision: str,
+        reviewer_id: str | None,
+        reason: str | None,
+        idempotency_key: str,
+    ) -> tuple[dict, bool]:
+        """Append one immutable review decision.
+
+        Returns ``(row, created)``. Replaying the same key with identical
+        content converges; the same key with different content raises
+        ``ValueError`` (fail closed, never merge). The proposal scope FK binds
+        the decision to the exact proposal (client + dataset version +
+        engagement), so cross-client decisions are impossible.
+        """
+        self.lock_decision_key(tenant_id, engagement_id, proposal_id, idempotency_key)
+        existing = self.get_mapping_decisions_by_key(
+            tenant_id, engagement_id, proposal_id, idempotency_key, for_update=True
+        )
+        if existing:
+            row = existing[0]
+            if (
+                row["decision"] == decision
+                and (str(row["reviewer_id"]) if row.get("reviewer_id") else None) == reviewer_id
+                and row.get("reason") == reason
+            ):
+                return row, False
+            raise ValueError("mapping decision replay conflict for this idempotency key")
+        row = (
+            self.conn.execute(
+                insert(self.t["mapping_decisions"])
+                .values(
+                    id=uuid.uuid4(),
+                    tenant_id=tenant_id,
+                    client_id=client_id,
+                    engagement_id=engagement_id,
+                    proposal_id=proposal_id,
+                    dataset_version_id=dataset_version_id,
+                    decision=decision,
+                    reviewer_id=reviewer_id,
+                    reason=reason,
+                    idempotency_key=idempotency_key,
+                )
+                .returning(self.t["mapping_decisions"])
+            )
+            .mappings()
+            .first()
+        )
+        return _row(row), True
+
+    def get_mapping_decision(self, decision_id: str, tenant_id: str) -> dict | None:
+        row = (
+            self.conn.execute(
+                select(self.t["mapping_decisions"])
+                .where(self.t["mapping_decisions"].c.id == decision_id)
+                .where(self.t["mapping_decisions"].c.tenant_id == tenant_id)
+            )
+            .mappings()
+            .first()
+        )
+        return _row(row) if row else None
+
+    def list_mapping_decisions(self, tenant_id: str, proposal_id: str) -> list[dict]:
+        rows = (
+            self.conn.execute(
+                select(self.t["mapping_decisions"])
+                .where(self.t["mapping_decisions"].c.tenant_id == tenant_id)
+                .where(self.t["mapping_decisions"].c.proposal_id == proposal_id)
+                .order_by(self.t["mapping_decisions"].c.decided_at, self.t["mapping_decisions"].c.id)
+            )
+            .mappings()
+            .all()
+        )
+        return [_row(r) for r in rows]
 
 
 def session_expiry(hours: int = 24) -> datetime:

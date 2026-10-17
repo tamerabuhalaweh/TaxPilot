@@ -77,6 +77,7 @@ def test_migration_discovery_exact_and_ordered():
         "0006_extraction_jobs.sql",
         "0007_rec_engagements.sql",
         "0008_dataset_versions.sql",
+        "0009_mapping_approvals.sql",
     ]
 
 
@@ -109,6 +110,7 @@ def test_first_migration_applies_and_rerun_is_noop():
         "0006",
         "0007",
         "0008",
+        "0009",
     ]
     assert migrate(url) == []
 

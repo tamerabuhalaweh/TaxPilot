@@ -6,7 +6,7 @@ Independent foundation work proceeds; these restrict production readiness, not t
 |---|---|---|---|
 | B-01 | Representative JoFotara exports (authorized) | Import profiles, REC fixtures, format support claims | OPEN — no samples in repo; REC-JOFO-01 delivered a fail-closed profile foundation only (no layout enabled, DEC-10 still OPEN) |
 | B-02 | Representative Sales Register files | Same as B-01 | OPEN |
-| B-03 | Representative General Ledger files | Same as B-01 | OPEN |
+| B-03 | Representative General Ledger files | Same as B-01 | OPEN — REC-GL-01 delivered a fail-closed policy-gated comparison foundation only (no account scope, measure, sign convention, or FX rule enabled; decision requests in `docs/product/REC-GL-01-boundary.md`) |
 | B-04 | Tax-domain expert engagement + rule approval | Any TX rule, REC legal interpretation, pack activation | OPEN |
 | B-05 | Hosting + data-residency decisions (ADR-001) | Staging/prod targets, subprocessors, cross-border basis | OPEN |
 | B-06 | AI provider + processing location (ADR-002) | Any external-model use; MVP runs provider-free | OPEN |

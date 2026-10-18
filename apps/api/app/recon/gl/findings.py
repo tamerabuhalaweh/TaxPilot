@@ -357,11 +357,14 @@ def _texts(outcome: GLOutcome) -> tuple[str, str, str, str, str, str, str | None
             difference = (
                 f"{noun} reference points to itself, not a distinct original posting; " "no link is asserted"
             )
-        else:
+        elif "REFERENCE_UNQUALIFIED" in outcome.flags:
             difference = (
-                f"{noun} reference names no qualifying original (unresolved, or only "
-                "other reversals); no link is asserted"
+                f"{noun} reference names a journal with no valid qualifying original "
+                "posting (malformed, dateless, out-of-currency, or itself a reversal); "
+                "no link is asserted"
             )
+        else:
+            difference = f"{noun} reference names no existing journal; no link is asserted"
         return (
             f"{noun} relationship needs verification",
             f"{noun}: {gl_text if outcome.gl else sales_text}",

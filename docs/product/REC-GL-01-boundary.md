@@ -93,10 +93,15 @@ and **no outcomes**; `project_gl` renders a single review-required
   key (issuer+number) are reported (`DUPLICATE_GL`/`DUPLICATE_SALES`), excluded,
   and contaminate the affected currency — never a false conclusion.
 - **Reversal/credit-note links (F3).** A link verifies ONLY against a *distinct,
-  qualifying original* posting: for GL, an in-scope **non-reversal** journal
-  line; for sales, a **non-credit-note, non-reversal** invoice. Self-references
-  (`SELF_REFERENCE`), reversal-only cycles, references to out-of-scope
-  originals, and unresolved references all stay `…_UNVERIFIED` (and
+  valid, qualifying original* posting. For GL, the referenced journal must
+  contain an in-scope **non-reversal** line with exactly one of debit/credit,
+  an approved currency, and a known period; a journal that merely exists but
+  holds no such line (malformed, amount-less, currency-less, dateless, or
+  reversal-only) does not qualify. For sales, the original must be a
+  **non-credit-note, non-reversal** invoice. Self-references
+  (`SELF_REFERENCE`), journals with no qualifying original
+  (`REFERENCE_UNQUALIFIED`), unresolved references (`REFERENCE_UNRESOLVED`),
+  and references to out-of-scope originals all stay `…_UNVERIFIED` (and
   contaminate). Amounts are never netted (`CREDIT_NOTE_LINKED/…UNVERIFIED`,
   `REVERSAL_NOTED/…UNVERIFIED`).
 - **Period.** `PERIOD_OUTSIDE` is a legitimate in-period filter and does **not**
@@ -170,13 +175,14 @@ real REC-005 run):**
 
 - `apps/api/app/recon/gl/{contracts,policy,matching,findings}.py` — pure domain.
 - `apps/api/tests/test_recon_gl_contracts.py`,
-  `test_recon_gl_matching_golden.py`, `test_recon_gl_findings_golden.py` — 55
+  `test_recon_gl_matching_golden.py`, `test_recon_gl_findings_golden.py` — 61
   synthetic tests: default-deny, reconciled/difference/tolerance, coverage
   contamination (F1 — every excluded/uncertain record blocks a conclusive
   verdict; legitimate out-of-period rows do not), malformed/missing values,
   currency segregation, period, duplicates, reversal/credit-note link
-  verification (F3 — self-reference, reversal-only cycles, out-of-scope and
-  unresolved originals refused; valid original posting verified), permutation-
-  stable fingerprints, long-precision exactness.
+  verification (F3 — self-reference, reversal-only cycles, malformed/
+  amount-less/currency-less/dateless originals, out-of-scope and unresolved
+  originals refused; valid original posting verified), permutation-stable
+  fingerprints, long-precision exactness.
 - Full `apps/api/tests` suite green; `ruff check`, `ruff format --check`, and
   `mypy apps/api` clean.

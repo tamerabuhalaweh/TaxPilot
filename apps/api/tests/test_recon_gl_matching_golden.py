@@ -587,7 +587,7 @@ def test_reversal_only_cycle_is_unverified() -> None:
     )
     unverified = [o for o in report.outcomes if o.kind == REVERSAL_UNVERIFIED]
     assert len(unverified) == 2
-    assert all(o.flags == ("REFERENCE_UNRESOLVED",) for o in unverified)
+    assert all(o.flags == ("REFERENCE_UNQUALIFIED",) for o in unverified)
     assert REVERSAL_NOTED not in kinds(report)
 
 
@@ -639,3 +639,85 @@ def test_sales_credit_note_self_reference_is_unverified() -> None:
     unverified = [o for o in report.outcomes if o.kind == CREDIT_NOTE_UNVERIFIED]
     assert unverified and unverified[0].flags == ("SELF_REFERENCE",)
     assert CREDIT_NOTE_LINKED not in kinds(report)
+
+
+def _assert_reversal_unqualified(report) -> None:
+    assert REVERSAL_NOTED not in kinds(report)
+    unverified = [o for o in report.outcomes if o.kind == REVERSAL_UNVERIFIED]
+    assert unverified and unverified[0].flags == ("REFERENCE_UNQUALIFIED",)
+
+
+def test_reversal_reference_to_malformed_original_is_unverified() -> None:
+    report = compare_sales_to_gl(
+        (),
+        (
+            gl_line("J1", 1, "4000", debit="100", credit="100", row=2),  # both set
+            gl_line("J9", 1, "4000", debit="100", reversal=True, ref="J1", row=3),
+        ),
+        request(policy()),
+    )
+    _assert_reversal_unqualified(report)
+
+
+def test_reversal_reference_to_original_without_amount_is_unverified() -> None:
+    report = compare_sales_to_gl(
+        (),
+        (
+            gl_line("J1", 1, "4000", row=2),  # neither debit nor credit
+            gl_line("J9", 1, "4000", debit="100", reversal=True, ref="J1", row=3),
+        ),
+        request(policy()),
+    )
+    _assert_reversal_unqualified(report)
+
+
+def test_reversal_reference_to_original_without_currency_is_unverified() -> None:
+    report = compare_sales_to_gl(
+        (),
+        (
+            gl_line("J1", 1, "4000", credit="100", currency=None, row=2),
+            gl_line("J9", 1, "4000", debit="100", reversal=True, ref="J1", row=3),
+        ),
+        request(policy()),
+    )
+    _assert_reversal_unqualified(report)
+
+
+def test_reversal_reference_to_original_with_unknown_period_is_unverified() -> None:
+    report = compare_sales_to_gl(
+        (),
+        (
+            gl_line("J1", 1, "4000", credit="100", when=None, row=2),
+            gl_line("J9", 1, "4000", debit="100", reversal=True, ref="J1", row=3),
+        ),
+        request(policy()),
+    )
+    _assert_reversal_unqualified(report)
+
+
+def test_reversal_reference_to_out_of_period_valid_original_is_verified() -> None:
+    # A known-date original outside the window is still a valid qualifying
+    # posting (reversals of prior-period documents are legitimate).
+    report = compare_sales_to_gl(
+        (),
+        (
+            gl_line("J1", 1, "4000", credit="100", when=date(2027, 1, 5), row=2),
+            gl_line("J9", 1, "4000", debit="100", reversal=True, ref="J1", row=3),
+        ),
+        request(policy()),
+    )
+    noted = [o for o in report.outcomes if o.kind == REVERSAL_NOTED]
+    assert noted and noted[0].flags == ("REFERENCE_VERIFIED",)
+
+
+def test_reversal_outcomes_are_permutation_stable() -> None:
+    rows = (
+        gl_line("J1", 1, "4000", credit="100", row=2),
+        gl_line("J2", 1, "4000", debit="100", credit="100", row=3),  # malformed original
+        gl_line("J8", 1, "4000", debit="100", reversal=True, ref="J1", row=4),
+        gl_line("J9", 1, "4000", debit="100", reversal=True, ref="J2", row=5),
+    )
+    forward = compare_sales_to_gl((), rows, request(policy()))
+    reversed_ = compare_sales_to_gl((), tuple(reversed(rows)), request(policy()))
+    assert forward.fingerprint == reversed_.fingerprint
+    assert kinds(forward) == kinds(reversed_)

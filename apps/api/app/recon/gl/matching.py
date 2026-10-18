@@ -21,9 +21,12 @@ Rules that hold on every supported path:
 - Legitimate out-of-period rows (PERIOD_OUTSIDE) are excluded without
   contaminating the in-period aggregate; rows whose period cannot be
   established (PERIOD_UNKNOWN) do contaminate.
-- Reversal/credit-note links verify only against a *distinct, qualifying
-  original* non-reversal posting: self-references, reversal-only cycles, and
-  unresolved references stay ``*_UNVERIFIED`` (and contaminate).
+- Reversal/credit-note links verify only against a *distinct, valid,
+  qualifying original* posting — for GL, an in-scope non-reversal journal line
+  with exactly one of debit/credit, an approved currency, and a known period.
+  Self-references, reversal-only cycles, a journal that exists but holds no
+  valid qualifying posting, unresolved references, and out-of-scope originals
+  stay ``*_UNVERIFIED`` (and contaminate).
 - Duplicates (journal+line on the GL side, issuer+number on the sales side) are
   reported and excluded from the aggregate; the currency bucket is contaminated.
 - Credit notes and reversals are preserved as linked / review records, never
@@ -174,6 +177,30 @@ def _store(store: dict[str, Decimal], bucket: str, value: Decimal) -> None:
     store[bucket] = _exact_add(store.get(bucket, _ZERO), value)
 
 
+def _is_qualifying_original(
+    line: GLLine,
+    account_scope: frozenset[str],
+    currency_set: frozenset[str],
+    start: date | None,
+    end: date | None,
+) -> bool:
+    """True only for a valid, eligible *original* posting a reversal may link to.
+
+    Requires: non-reversal, in-scope account, exactly one of debit/credit set
+    (never both, never neither), an approved currency, and a known period.
+    Out-of-period originals still qualify (known date); dateless ones do not.
+    """
+    if line.is_reversal:
+        return False
+    if line.account_code.strip() not in account_scope:
+        return False
+    if (line.debit is None) == (line.credit is None):
+        return False
+    if line.currency is None or line.currency not in currency_set:
+        return False
+    return _window(line.transaction_date, start, end) != PERIOD_UNKNOWN
+
+
 def compare_sales_to_gl(
     sales: tuple[SalesRegisterEntry, ...],
     gl_lines: tuple[GLLine, ...],
@@ -229,13 +256,31 @@ def compare_sales_to_gl(
         for sales_row in sales_entries:
             excluded_sales.setdefault(bucket, []).append(sales_row)
 
-    # F3: a reversal verifies only against a *distinct* qualifying original — an
-    # in-scope, non-reversal GL posting. Reversal-only journals never qualify.
-    reversal_targets = {
-        line.journal_id.strip()
-        for line in gl_lines
-        if not line.is_reversal and line.account_code.strip() in account_scope
-    }
+    # F3: a reversal verifies only against a *distinct* journal that actually
+    # contains a valid, eligible original posting (non-reversal, in-scope
+    # account, exactly one of debit/credit, approved currency, known period).
+    # A referenced journal that merely exists — e.g. one whose only lines are
+    # malformed, dateless, or themselves reversals — does not qualify.
+    all_journal_ids = {line.journal_id.strip() for line in gl_lines}
+    originals_by_journal: dict[str, set[str]] = {}
+    for line in gl_lines:
+        currency = line.currency if line.currency in currency_set else None
+        if _is_qualifying_original(
+            line, account_scope, currency_set, request.period_start, request.period_end
+        ):
+            originals_by_journal.setdefault(line.journal_id.strip(), set()).add(currency or "")
+
+    def _reference_flag(reference: str, currency: str | None) -> str:
+        """REFERENCE_VERIFIED | REFERENCE_UNQUALIFIED | REFERENCE_UNRESOLVED."""
+        if (
+            currency is not None
+            and reference in originals_by_journal
+            and currency in originals_by_journal[reference]
+        ):
+            return "REFERENCE_VERIFIED"
+        if reference in all_journal_ids:
+            return "REFERENCE_UNQUALIFIED"
+        return "REFERENCE_UNRESOLVED"
 
     def emit(
         kind: str,
@@ -296,21 +341,23 @@ def compare_sales_to_gl(
                     flags=("SELF_REFERENCE",),
                 )
                 contaminate(bucket, COVERAGE_UNVERIFIED_RELATIONSHIP, gl_rows=(line,))
-            elif reference in reversal_targets:
-                emit(
-                    REVERSAL_NOTED,
-                    gl=(line,),
-                    rationale=("REVERSAL_PRESERVED",),
-                    flags=("REFERENCE_VERIFIED",),
-                )
             else:
-                emit(
-                    REVERSAL_UNVERIFIED,
-                    gl=(line,),
-                    rationale=("REVERSAL_PRESERVED",),
-                    flags=("REFERENCE_UNRESOLVED",),
-                )
-                contaminate(bucket, COVERAGE_UNVERIFIED_RELATIONSHIP, gl_rows=(line,))
+                flag = _reference_flag(reference, bucket)
+                if flag == "REFERENCE_VERIFIED":
+                    emit(
+                        REVERSAL_NOTED,
+                        gl=(line,),
+                        rationale=("REVERSAL_PRESERVED",),
+                        flags=(flag,),
+                    )
+                else:
+                    emit(
+                        REVERSAL_UNVERIFIED,
+                        gl=(line,),
+                        rationale=("REVERSAL_PRESERVED",),
+                        flags=(flag,),
+                    )
+                    contaminate(bucket, COVERAGE_UNVERIFIED_RELATIONSHIP, gl_rows=(line,))
             continue
         if line.debit is not None and line.credit is not None:
             emit(INVALID_DEBIT_CREDIT_PAIR, gl=(line,), rationale=("DEBIT_AND_CREDIT_PRESENT",))

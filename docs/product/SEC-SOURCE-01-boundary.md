@@ -89,24 +89,50 @@ verdicts, never bytes)**, workers↔jobs/store (fenced), provider↔KMS/backups
 upload → QUARANTINED (0005, frozen; only → REJECTED in place; DELETE refused)
   └─▶ scan_verdicts (append-only)                    # migration 0010 PROPOSED
         provider identity + trusted origin (SigV4/queue/control-plane) +
-        verbatim verdict + whole-object SHA-256 + exact object version
-        (versionId/eTag) + plan/policy version + event id + scanned_at +
-        engine/signature version ONLY if supplied (else `not exposed by vendor`)
+        verbatim verdict + immutable storage VersionId + separately verified,
+        server-computed whole-object SHA-256 + plan/policy version + event id +
+        scanned_at + engine/signature version ONLY if supplied (else
+        `not exposed by vendor`). ETag, when present, is recorded as
+        supplemental NON-authoritative metadata — never a version id, never a
+        SHA-256.
   └─▶ release_authorizations (append-only)           # migration 0010 PROPOSED
         verdict_id + authorizer (trusted policy identity) + scope=extract +
-        issued_at + expires_at (+ approvals when SoD required) + revoked flag
-  └─▶ gated extraction (worker requires a live, unexpired release whose verdict
-        hash+version match the stored object BEFORE any read; re-checked at
-        job start) → future normalization + human approval → eligible job
+        issued_at + expires_at (+ approvals when SoD required). Immutable:
+        NO revoked/superseded columns.
+  └─▶ release_revocations / release_events (append-only)  # same migration
+        authorization_id + kind (revoke | supersede) + effective_at + event id.
+        Effective release state is a deterministic projection over immutable
+        events, never a mutable flag.
+  └─▶ immutable dataset-version registration (0008) using verified source
+        metadata (raw SHA + format + owner) — independent of mapping approval
+  └─▶ authorized header extraction (minimum read, release-gated) + mapping
+        proposal preparation against the existing dataset version/header fp
+  └─▶ engagement-scoped human mapping approval (REC-DATA-02, 0009)
+  └─▶ validated normalization → new fingerprinted dataset version
+  └─▶ derived eligibility (release + approval + fingerprint) → eligible job
 ```
+
+**Staged gates and three distinct permissions (F1).** Registration must **not**
+require mapping approval: REC-DATA-02 proposals bind an *existing* immutable
+`dataset_version_id`, so approval-before-registration is an impossible cycle.
+The order is: trusted release → immutable **dataset registration** (verified
+source metadata) → authorized **header read** (permission to read source headers
+only) → engagement-scoped **human mapping approval** → **normalization**
+(permission to normalize) → derived-run **eligibility** (permission to execute
+financial reconciliation). Reading headers, normalizing, and executing
+reconciliation are separately granted; release alone authorizes none of them.
 
 Rules (enforced by the pure evaluator today; persisted later): rejection and
 revocation **never** silently enable access; unscanned bytes are never parsed,
 downloaded, or promoted (SRS FR-FILE-007); `TIMEOUT`/`UNSUPPORTED`/`ACCESS_DENIED`/
-`FAILED`/unknown/outage never mean clean; a hash/object-version mismatch fails
-closed; re-scan required on policy/engine change; raw webhook JSON and
-self-reported object tags never authorize release; the raw source SHA is **not**
-the normalized `dataset_fingerprint`.
+`FAILED`/unknown/outage never mean clean; a hash or object-**VersionId** mismatch
+fails closed (**Object identity (F2):** an immutable `VersionId` with strict,
+version-pinned reads is authoritative; ETag is non-authoritative supplemental
+metadata and is never equated with `VersionId` or with a whole-object SHA-256 —
+multipart-upload ETags and SSE ETags are not content hashes); re-scan required on
+policy/engine change; raw webhook JSON and self-reported object tags never
+authorize release; the raw source SHA is **not** the normalized
+`dataset_fingerprint`.
 
 ## 5. Missing production storage and scanning capabilities
 
@@ -123,15 +149,18 @@ Options and trade-offs are detailed in `EP04C_DECISION_REGISTER.md`; this sectio
 is the SEC-SOURCE-01 contract view and adds DEC-06.
 
 ### 6.1 DEC-S1 — private object storage, encryption, KMS, versioning, IAM
-- Requirements: private, versioned bucket(s); **immutable per-object version
-  ID**; whole-object SHA-256 recorded server-side; Block Public Access (account +
-  bucket); SSE with customer-managed KMS keys (per-tenant data keys, envelope);
-  scheduled rotation with old key versions retained so backups stay decryptable;
-  region-pinned SDK endpoint (no path-style cross-region fallback);
+- Requirements: private, versioned bucket(s); **immutable per-object `VersionId`
+  with strict version-pinned reads**; separately **server-computed and verified
+  whole-object SHA-256**; ETag stored only as supplemental non-authoritative
+  metadata (never a version id, never a content hash); Block Public Access
+  (account + bucket); SSE with customer-managed KMS keys (per-tenant data keys,
+  envelope); scheduled rotation with old key versions retained so backups stay
+  decryptable; region-pinned SDK endpoint (no path-style cross-region fallback);
   least-privilege, per-role IAM (uploader / scanner read-lease / worker /
   sweeper); no public ACL; no long-lived credentials in the image or env dumps.
 - Hazards to design out: presigned-URL scope escape, SSRF via endpoint config,
-  key-in-logs, cross-region drift.
+  key-in-logs, cross-region drift, **ETag-as-identity confusion (S3 ETags are not
+  version ids and, for multipart/SSE objects, not whole-object hashes)**.
 - Candidates (PROPOSED): Stack A AWS `me-south-1`; Stack B AWS `eu-central-1`;
   Stack C S3-compatible independent store. None approved.
 
@@ -174,10 +203,16 @@ is the SEC-SOURCE-01 contract view and adds DEC-06.
   change.
 
 ### 6.5 DEC-R1 — production security readiness (GO checklist)
-Secrets management; least-privilege IAM; signed-event authenticity; audit
-retention; tenant-boundary negatives; KMS + rotation; abuse/rate limits; SIEM
-alerting; adversarial end-to-end red-team; backup restore test; operational
-on-call and runbooks. All must pass in staging before any production GO.
+- **Sequencing (F4):** DEC-R1 is a **pre-production GO after staging evidence**,
+  not a build precondition. P0 approves the planned security controls and the
+  *test plan*; the DEC-R1 checklist itself is executed and signed off in P5, after
+  staging implementation, integration verification and drills produce its
+  evidence. Requiring final production certification before the work that
+  produces its evidence is not intended.
+- Checklist: secrets management; least-privilege IAM; signed-event authenticity;
+  audit retention; tenant-boundary negatives; KMS + rotation; abuse/rate limits;
+  SIEM alerting; adversarial end-to-end red-team; backup restore test;
+  operational on-call and runbooks. All must pass in staging before any production GO.
 
 ### 6.6 DEC-06 — release authority and separation of duties (SoD)
 - Release is authorized by a **trusted policy identity**, not a person acting
@@ -196,17 +231,22 @@ on-call and runbooks. All must pass in staging before any production GO.
 - `DEFAULT_RELEASE_POLICY.approved is False` ⇒ `RELEASE_NOT_ENABLED`
   short-circuits everything; `source_released(...)` is `False` everywhere.
 - `evaluate_registration` refuses with `SOURCE_NOT_RELEASED`; derived-run
-  eligibility refuses; release alone is never sufficient (needs REC-DATA-02
-  approval + normalized fingerprint).
+  eligibility refuses. **Registration uses verified source metadata and does not
+  depend on mapping approval (F1).** Release alone is never sufficient for a run:
+  eligible execution also requires REC-DATA-02 mapping approval and the normalized
+  `dataset_fingerprint`.
 - Missing object store / scanner / trust boundary ⇒ 503 and no release path.
   SEC-SOURCE-02 must add evidence behind the approved policy, never around it.
 
 ## 8. Trusted evidence contract (binding, append-only, replay)
 
-1. **Exact source SHA-256 + object-version binding.** Every verdict binds the
-   server-computed whole-object SHA-256 **and** the exact provider object
-   `versionId`/eTag. Release re-verifies both; extraction re-checks at job start
-   (`INTEGRITY_MISMATCH` on swap).
+1. **Exact source SHA-256 + immutable object-version binding.** Every verdict
+   binds an immutable storage `VersionId` **and** a separately computed,
+   server-verified whole-object SHA-256. Reads are pinned to that exact
+   `VersionId`; release re-verifies both; extraction re-checks at job start
+   (`INTEGRITY_MISMATCH` on swap). A matching ETag never substitutes for a
+   `VersionId` or a SHA-256; a mismatched `VersionId` is rejected even when ETags
+   appear identical (multipart/SSE ETags are not content hashes).
 2. **Append-only scan/release evidence.** New tables only (proposed `0010`):
    immutable rows with `BEFORE UPDATE/DELETE` refusal triggers, composite
    `(tenant_id, client_id, source_intake_id)` FKs, `NOT NULL` SHA-256 CHECKs,
@@ -221,8 +261,15 @@ on-call and runbooks. All must pass in staging before any production GO.
 5. **Expiration.** A finite policy TTL; `max_evidence_age_seconds=None` means no
    evidence is fresh (default-closed); malformed/non-finite timestamps fail
    closed (REC-DATA-03 F1).
-6. **Revocation.** Append-only revocation record / supersede generation; never
-   mutate historical evidence (`RELEASE_REVOKED`).
+6. **Revocation is append-only (F3).** Authorizations are immutable and carry no
+   `revoked`/`superseded_by` columns. Revocation/supersession is represented by
+   **separately appended** `release_revocations` / `release_events` rows bound to
+   the immutable authorization + evidence. The **effective release state** is a
+   deterministic projection: ordering by `(effective_at, event id)` with
+   replay-dedup, late-arriving events applied by time (not arrival), and
+   **default-deny** whenever evidence conflicts, is ambiguous, or a revocation
+   and a later reactivation are both present. Historical rows are never updated
+   or deleted (`RELEASE_REVOKED`).
 7. **Trusted source binding.** Evidence binds an immutable tenant/client/intake
    plus object identity (REC-DATA-03 F2), so identical bytes across tenants never
    confuse.
@@ -235,18 +282,28 @@ on-call and runbooks. All must pass in staging before any production GO.
 | DEC-S2 | Scanner + provider-aware verdict trust, fallback, outage behavior, rescan/TTL | PO + Security | sandbox scan-latency/outage drill | verdict/release tables, gated extraction |
 | DEC-03 | Hosting region + cross-border transfer basis (SRS DEC-12) | PO + Tech Lead + Legal | PDPL Law 24/2023 assessment + counsel opinion + DPAs | region pin, any real data |
 | DEC-02 | Retention/deletion/backup/hold periods + legal authority (SRS pilot default is context only) | PO + Legal | legal authority + hold process + backup-expiry compatibility | lifecycle/TTL, tombstones |
-| DEC-R1 | Pre-prod security review, env credentials, pilot gate | PO + Security | §6.5 checklist + staging drills + sign-off | any production flow |
+| DEC-R1 | Pre-prod security review, env credentials, pilot gate | PO + Security | §6.5 checklist + staging drills + sign-off **in P5** | any production flow / real data |
 | DEC-06 | Release authority set + separation of duties (two-person?) | PO + Security | SoD policy reconciled with REC-DATA-02 | `require_two_person` semantics |
 | Revocation semantics | What revokes a release + append-only representation | PO + Security + Tech Lead | — | revocation design |
 | Release TTL / chronology | Compulsory finite TTL; no future `issued_at`; scan↔auth chronology | PO + Security | — | production policy values |
 
 All above are **BLOCKED**. No AI may mark them APPROVED.
 
+**Sandbox vs production gating (F4).** P0 approves the **architecture, provider
+selections and planned security controls** required to build each phase, plus the
+security *test plan*. P1–P4 (synthetic sandbox construction) may proceed once
+their build-blocking decisions (DEC-S1/S2 primarily) are approved. Only
+**activation on real customer data** additionally requires the final DEC-R1 GO
+after P5 staging evidence, together with DEC-02 (retention) and DEC-03
+(residency/transfer) legal determinations. Legal/retention/residency questions
+that gate *sandbox architecture* (e.g. region-pinned design, lifecycle mechanics)
+are decided at P0; the same questions' *production* effect is confirmed at P5.
+
 ## 10. Verified external facts (dated — re-verify at decision time)
 
 | Fact | Value (verified Oct 2026) | Source | Caveat |
 |---|---|---|---|
-| GuardDuty Malware Protection for S3 evidence surface | statuses `NO_THREATS_FOUND/THREATS_FOUND/UNSUPPORTED/ACCESS_DENIED/FAILED`; EventBridge at-least-once; carries object `versionId`/`eTag`; **no** engine/signature version | `EP04C_DECISION_REGISTER.md`; AWS monitoring docs | managed-scan pricing/behavior drift |
+| GuardDuty Malware Protection for S3 evidence surface | statuses `NO_THREATS_FOUND/THREATS_FOUND/UNSUPPORTED/ACCESS_DENIED/FAILED`; EventBridge at-least-once; carries object `versionId`/`eTag` (**`versionId` authoritative; `eTag` non-authoritative supplement, not a SHA-256**); **no** engine/signature version | `EP04C_DECISION_REGISTER.md`; AWS monitoring docs | managed-scan pricing/behavior drift |
 | Backblaze B2 | $6.95/TB/mo; regions US/EU/CA — **no Middle East**; account region immutable | `EP04C_DECISION_REGISTER.md`; Backblaze pricing page | list-price assumption |
 | Wasabi | 16 regions NA/EMEA/APAC; 90-day minimum = early-deletion *billing* charge, not a technical block | `EP04C_DECISION_REGISTER.md`; Wasabi terms/docs | DEC-02 cost compatibility risk |
 | Cloudflare R2 | jurisdictions default/eu/us/fedramp(-high) only; location hints best-effort, not guaranteed | `EP04C_DECISION_REGISTER.md`; R2 data-location docs | not viable for ME residency as drawn |

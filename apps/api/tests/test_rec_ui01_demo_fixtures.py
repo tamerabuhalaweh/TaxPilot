@@ -17,12 +17,23 @@ from app.demo.service import run_fixture, to_response
 FIXTURE_ID = "synthetic-sales-gl-v1"
 
 
-def test_registry_exposes_the_scenario() -> None:
-    assert list(FIXTURES) == [FIXTURE_ID]
+def test_registry_exposes_the_scenarios() -> None:
+    assert list(FIXTURES) == [FIXTURE_ID, "synthetic-sales-gl-v2"]
     fixture = get_fixture(FIXTURE_ID)
     assert fixture is not None
     assert fixture.policy.currency_scope == ("JOD", "USD")
     assert get_fixture("does-not-exist") is None
+
+
+def test_second_fixture_is_a_distinct_calculation() -> None:
+    fixture = get_fixture("synthetic-sales-gl-v2")
+    assert fixture is not None
+    report, findings = run_fixture(fixture, tenant_id="t1", client_id="c1")
+    difference = next(o for o in report.outcomes if o.kind == "DIFFERENCE")
+    assert str(difference.delta) == "50.000"
+    assert difference.currency == "JOD"
+    assert report.counts == {"DIFFERENCE": 1}
+    assert findings.summary["total"] == 1
 
 
 def test_run_produces_the_expected_outcomes() -> None:

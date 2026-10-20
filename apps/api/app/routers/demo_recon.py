@@ -131,16 +131,33 @@ def _money_text(amount: str | None, currency: str | None) -> str:
     return f"{amount} {currency}" if currency else amount
 
 
+def _period_text(value: object) -> str:
+    iso = getattr(value, "isoformat", None)
+    return iso() if callable(iso) else str(value)
+
+
+def _engagement_period(engagement: dict) -> tuple[str, str]:
+    return (_period_text(engagement.get("period_start")), _period_text(engagement.get("period_end")))
+
+
 def _pdf_lines(
-    fixture: demo_fixtures.DemoFixture, report: GLComparisonReport, findings: GLFindingsReport
+    fixture: demo_fixtures.DemoFixture,
+    report: GLComparisonReport,
+    findings: GLFindingsReport,
+    engagement: dict,
 ) -> list[Line]:
+    eng_start, eng_end = _engagement_period(engagement)
     lines: list[Line] = [
         Line(demo_fixtures.SYNTHETIC_LABEL_ASCII, size=12, font="F2"),
         Line(""),
         Line(fixture.title, size=14),
         Line(f"Synthetic fixture: {fixture.fixture_id}"),
         Line(f"Jurisdiction: {report.jurisdiction}    Rules version: {report.rules_version}"),
-        Line(f"Period: {fixture.period_start.isoformat()} to {fixture.period_end.isoformat()}"),
+        Line(f"Engagement period: {eng_start} to {eng_end}"),
+        Line(
+            f"Fixture comparison period: {fixture.period_start.isoformat()} "
+            f"to {fixture.period_end.isoformat()}"
+        ),
         Line(
             f"Basis: {report.comparison_basis}    Measure: {report.sales_measure}    "
             f"Convention: {report.debit_credit_convention}"
@@ -173,15 +190,42 @@ def _pdf_lines(
     return lines
 
 
+def _assert_export_matches_display(
+    recon_fingerprint: str,
+    findings_fingerprint: str,
+    expected_recon_fingerprint: str | None,
+    expected_findings_fingerprint: str | None,
+) -> None:
+    if expected_recon_fingerprint is not None and expected_recon_fingerprint != recon_fingerprint:
+        raise AppError(
+            "STATE_CONFLICT",
+            "Export request does not match the displayed run.",
+            {"reason": "DEMO_FINGERPRINT_MISMATCH", "field": "recon_fingerprint"},
+        )
+    if expected_findings_fingerprint is not None and expected_findings_fingerprint != findings_fingerprint:
+        raise AppError(
+            "STATE_CONFLICT",
+            "Export request does not match the displayed run.",
+            {"reason": "DEMO_FINGERPRINT_MISMATCH", "field": "findings_fingerprint"},
+        )
+
+
 @router.get("/engagements/{engagement_id}/demo-recon-runs/report")
 def export_demo_recon(
     engagement_id: str,
     request: Request,
     fixture_id: str = Query(min_length=1, max_length=64),
     format: str = Query(default="pdf", pattern="^(pdf|xlsx)$"),
+    expected_recon_fingerprint: str | None = Query(default=None, min_length=1, max_length=64),
+    expected_findings_fingerprint: str | None = Query(default=None, min_length=1, max_length=64),
     user: CurrentUser = Depends(require_tenant),
 ) -> Response:
-    """Deterministically render the demo run as a labelled PDF or XLSX file."""
+    """Deterministically render the demo run as a labelled PDF or XLSX file.
+
+    When the caller supplies the fingerprints of the run currently displayed,
+    the export refuses to render a different calculation: this binds the
+    downloaded document to the exact on-screen result (see REC-UI-01 F1).
+    """
     _require_enabled()
     fixture = _fixture_or_422(fixture_id)
     tenant_id = tenant_of(user)
@@ -192,12 +236,15 @@ def export_demo_recon(
     finally:
         conn.close()
     report, findings = run_fixture(fixture, tenant_id=tenant_id, client_id=str(engagement["client_id"]))
+    _assert_export_matches_display(
+        report.fingerprint, findings.fingerprint, expected_recon_fingerprint, expected_findings_fingerprint
+    )
     filename = f"synthetic-recon-{fixture.fixture_id}-{findings.fingerprint[:12]}.{format}"
     if format == "xlsx":
-        content = build_xlsx(fixture, report, findings)
+        content = build_xlsx(fixture, report, findings, engagement_period=_engagement_period(engagement))
         media_type = _XLSX_MEDIA
     else:
-        content = build_pdf(_pdf_lines(fixture, report, findings))
+        content = build_pdf(_pdf_lines(fixture, report, findings, engagement))
         media_type = "application/pdf"
     return Response(
         content=content,

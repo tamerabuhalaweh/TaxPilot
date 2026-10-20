@@ -261,15 +261,29 @@ export async function runDemoRecon(engagementId: string, fixtureId: string): Pro
   );
 }
 
-/** Download a deterministic, labelled demo report as a browser file. */
+export interface DemoReportBinding {
+  fixtureId: string;
+  reconFingerprint: string;
+  findingsFingerprint: string;
+}
+
+/** Download a deterministic, labelled demo report bound to the displayed run.
+ *
+ * The fingerprints are sent as expected values so the API refuses to export a
+ * report that does not match what the reviewer is looking at. */
 export async function downloadDemoReport(
   engagementId: string,
-  fixtureId: string,
+  binding: DemoReportBinding,
   format: "pdf" | "xlsx"
 ): Promise<void> {
+  const params = new URLSearchParams({
+    fixture_id: binding.fixtureId,
+    format,
+    expected_recon_fingerprint: binding.reconFingerprint,
+    expected_findings_fingerprint: binding.findingsFingerprint
+  });
   const res = await fetch(
-    `/api/v1/engagements/${encodeURIComponent(engagementId)}/demo-recon-runs/report` +
-      `?fixture_id=${encodeURIComponent(fixtureId)}&format=${format}`
+    `/api/v1/engagements/${encodeURIComponent(engagementId)}/demo-recon-runs/report?${params.toString()}`
   );
   if (!res.ok) {
     let code = `HTTP_${res.status}`;
@@ -287,7 +301,7 @@ export async function downloadDemoReport(
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
-  anchor.download = `synthetic-recon-${fixtureId}.${format}`;
+  anchor.download = `synthetic-recon-${binding.fixtureId}.${format}`;
   document.body.appendChild(anchor);
   anchor.click();
   anchor.remove();

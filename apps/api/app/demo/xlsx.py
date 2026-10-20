@@ -19,13 +19,26 @@ from app.recon.gl import GLComparisonReport, GLFindingsReport
 _BOLD = Font(bold=True)
 
 
-def _summary_sheet(ws, fixture: DemoFixture, report: GLComparisonReport, findings: GLFindingsReport) -> None:
+def _summary_sheet(
+    ws,
+    fixture: DemoFixture,
+    report: GLComparisonReport,
+    findings: GLFindingsReport,
+    engagement_period: tuple[str, str] | None,
+) -> None:
     rows: list[tuple[str, str]] = [
         ("Fixture", fixture.title),
         ("Fixture id", fixture.fixture_id),
         ("Jurisdiction", report.jurisdiction),
         ("Rules version", report.rules_version),
-        ("Period", f"{fixture.period_start.isoformat()} to {fixture.period_end.isoformat()}"),
+        (
+            "Engagement period",
+            f"{engagement_period[0]} to {engagement_period[1]}" if engagement_period else "not supplied",
+        ),
+        (
+            "Fixture comparison period",
+            f"{fixture.period_start.isoformat()} to {fixture.period_end.isoformat()}",
+        ),
         ("Comparison basis", str(report.comparison_basis)),
         ("Sales measure", str(report.sales_measure)),
         ("Debit/credit convention", str(report.debit_credit_convention)),
@@ -119,12 +132,23 @@ def _evidence_sheet(ws, findings: GLFindingsReport) -> None:
             row += 1
 
 
-def build_xlsx(fixture: DemoFixture, report: GLComparisonReport, findings: GLFindingsReport) -> bytes:
-    """Render the demo run into an in-memory XLSX workbook."""
+def build_xlsx(
+    fixture: DemoFixture,
+    report: GLComparisonReport,
+    findings: GLFindingsReport,
+    *,
+    engagement_period: tuple[str, str] | None = None,
+) -> bytes:
+    """Render the demo run into an in-memory XLSX workbook.
+
+    ``engagement_period`` is display-only context: the calculation always uses
+    the fixture's own comparison period, which the Summary sheet states
+    explicitly so the two can never be conflated.
+    """
     workbook = Workbook()
     summary = workbook.active
     summary.title = "Summary"
-    _summary_sheet(summary, fixture, report, findings)
+    _summary_sheet(summary, fixture, report, findings, engagement_period)
     _findings_sheet(workbook.create_sheet("Findings"), findings)
     _evidence_sheet(workbook.create_sheet("Evidence"), findings)
     buffer = BytesIO()

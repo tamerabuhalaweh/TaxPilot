@@ -48,6 +48,7 @@ DEMO_RULES_VERSION = "1"
 SALES_DATASET_ID = "SYNTHETIC-SALES-v1"
 GL_DATASET_ID = "SYNTHETIC-GL-v1"
 _FIXTURE_ID = "synthetic-sales-gl-v1"
+_FIXTURE_ID_V2 = "synthetic-sales-gl-v2"
 _ISSUER = "Synthetic Trading LLC"
 _EXPORTER = "Synthetic Export Co"
 
@@ -201,7 +202,52 @@ def _build_sales_gl_v1() -> DemoFixture:
     )
 
 
-FIXTURES: dict[str, DemoFixture] = {_FIXTURE_ID: _build_sales_gl_v1()}
+def _build_sales_gl_v2() -> DemoFixture:
+    """A second, smaller scenario used to exercise fixture switching.
+
+    One JOD invoice exceeds its in-scope ledger posting by exactly 50.000, so a
+    run of this fixture must never be described by the v1 numbers.
+    """
+    policy = GLComparisonPolicy(
+        policy_id="DEMO-GL-POL-2",
+        policy_version="1",
+        status=POLICY_APPROVED,
+        comparison_basis=BASIS_AGGREGATE_PERIOD,
+        sales_measure=MEASURE_NET,
+        gl_account_scope=("4100",),
+        debit_credit_convention=CREDIT_POSITIVE,
+        currency_scope=("JOD",),
+        tolerance=Decimal("0"),
+        rules_version=DEMO_RULES_VERSION,
+        approved_by="synthetic-demo-reviewer",
+        approved_at="2026-01-01",
+        provenance=GLPolicyProvenance(authority="synthetic-demo-only", reference="REC-UI-01"),
+    )
+    sales = (_sales("INV-2001", "1500.000", currency="JOD", when=date(2026, 5, 1), row=2),)
+    gl = (_gl("J-21", 1, "4100", credit="1450.000", currency="JOD", when=date(2026, 5, 1), row=2),)
+    return DemoFixture(
+        fixture_id=_FIXTURE_ID_V2,
+        title="Sales register vs general ledger (small JOD variance)",
+        description=(
+            "Synthetic single-invoice JOD book whose ledger posting is 50.000 below the sales "
+            "register, used to verify that selection changes never reuse another fixture's run."
+        ),
+        jurisdiction=DEMO_JURISDICTION,
+        rules_version=DEMO_RULES_VERSION,
+        sales_dataset_id=SALES_DATASET_ID,
+        gl_dataset_id=GL_DATASET_ID,
+        period_start=date(2026, 1, 1),
+        period_end=date(2026, 12, 31),
+        policy=policy,
+        sales=sales,
+        gl=gl,
+    )
+
+
+FIXTURES: dict[str, DemoFixture] = {
+    _FIXTURE_ID: _build_sales_gl_v1(),
+    _FIXTURE_ID_V2: _build_sales_gl_v2(),
+}
 
 
 def get_fixture(fixture_id: str) -> DemoFixture | None:

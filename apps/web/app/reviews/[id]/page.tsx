@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { use, useEffect, useState } from "react";
+import { use, useEffect, useRef, useState } from "react";
 
 import { Alert } from "../../../components/Alert";
 import { Button } from "../../../components/Button";
@@ -46,7 +46,12 @@ function statusLabel(locale: "en" | "ar", status: string): string {
   return t(locale, key);
 }
 
-/** Review workspace: run the restricted synthetic demo and inspect findings. */
+/** Review workspace: run the restricted synthetic demo and inspect findings.
+ *
+ * REC-UI-01 F1: the displayed run and the exported document are one unit. A
+ * selection change invalidates the run, an in-flight response from a previous
+ * selection is discarded, and exports always use the run's own fixture and
+ * fingerprints (never the live selection). */
 export default function ReviewWorkspacePage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const { locale, setLocale } = useLocale();
@@ -59,9 +64,11 @@ export default function ReviewWorkspacePage({ params }: { params: Promise<{ id: 
   const [runError, setRunError] = useState<string | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
   const [exporting, setExporting] = useState<"pdf" | "xlsx" | null>(null);
+  const runGeneration = useRef(0);
+
+  const selectedFixture = fixtures.find((fixture) => fixture.fixture_id === fixtureId) ?? null;
 
   useEffect(() => {
-    const ctrl = new AbortController();
     getEngagement(id)
       .then((engagement) => setState({ kind: "ready", engagement }))
       .catch((err: unknown) => {
@@ -70,7 +77,6 @@ export default function ReviewWorkspacePage({ params }: { params: Promise<{ id: 
           setState({ kind: "denied" });
         } else setState({ kind: "unreachable" });
       });
-    return () => ctrl.abort();
   }, [id]);
 
   useEffect(() => {
@@ -79,33 +85,57 @@ export default function ReviewWorkspacePage({ params }: { params: Promise<{ id: 
         setFixtures(all);
         setFixtureId((prev) => prev || all[0]?.fixture_id || "");
       })
-      .catch((err: unknown) => {
-        if (err instanceof ApiRequestError && err.code === "DEMO_NOT_ENABLED") setFixturesDisabled(true);
-        else setFixturesDisabled(true);
-      });
+      .catch(() => setFixturesDisabled(true));
   }, []);
+
+  function onFixtureChange(next: string): void {
+    // Invalidate any displayed result and any response still in flight: the
+    // next run must be for the newly selected fixture.
+    runGeneration.current += 1;
+    setFixtureId(next);
+    setRun(null);
+    setRunning(false);
+    setRunError(null);
+    setExportError(null);
+  }
 
   async function onRun(): Promise<void> {
     if (state.kind !== "ready" || !fixtureId) return;
+    const requestedFixture = fixtureId;
+    const generation = ++runGeneration.current;
+    setRun(null);
     setRunError(null);
     setExportError(null);
     setRunning(true);
     try {
-      setRun(await runDemoRecon(state.engagement.id, fixtureId));
+      const payload = await runDemoRecon(state.engagement.id, requestedFixture);
+      // Ignore a stale response if the selection changed while it was running.
+      if (generation !== runGeneration.current || payload.fixture_id !== requestedFixture) return;
+      setRun(payload);
     } catch (err: unknown) {
+      if (generation !== runGeneration.current) return;
       if (err instanceof ApiRequestError && err.code === "DEMO_NOT_ENABLED") setFixturesDisabled(true);
       else setRunError(t(locale, "review.runFailed"));
     } finally {
-      setRunning(false);
+      if (generation === runGeneration.current) setRunning(false);
     }
   }
 
   async function onExport(format: "pdf" | "xlsx"): Promise<void> {
-    if (state.kind !== "ready" || !fixtureId) return;
+    if (state.kind !== "ready" || !run) return;
     setExportError(null);
     setExporting(format);
     try {
-      await downloadDemoReport(state.engagement.id, fixtureId, format);
+      // Always export the displayed run, not whatever is selected now.
+      await downloadDemoReport(
+        state.engagement.id,
+        {
+          fixtureId: run.fixture_id,
+          reconFingerprint: run.recon_fingerprint,
+          findingsFingerprint: run.findings_fingerprint
+        },
+        format
+      );
     } catch {
       setExportError(t(locale, "review.exportFailed"));
     } finally {
@@ -161,15 +191,24 @@ export default function ReviewWorkspacePage({ params }: { params: Promise<{ id: 
     if (fixturesDisabled) {
       return <Alert message={t(locale, "review.demoDisabled")} />;
     }
+    const engagement = state.kind === "ready" ? state.engagement : null;
     const total = run ? Number(run.summary.total ?? run.findings.length) : 0;
     const reviewRequired = run ? Number(run.summary.review_required ?? 0) : 0;
     const informational = run ? Number(run.summary.informational ?? 0) : 0;
     const difference = run?.findings.find((f) => f.outcome_kind === "DIFFERENCE");
+    const fixturePeriod = selectedFixture
+      ? `${selectedFixture.period_start} – ${selectedFixture.period_end}`
+      : "—";
+    const periodMismatch =
+      engagement !== null &&
+      selectedFixture !== null &&
+      (selectedFixture.period_start !== engagement.period_start ||
+        selectedFixture.period_end !== engagement.period_end);
     return (
       <div>
         <div className="tp-field">
           <label htmlFor="rv-fixture">{t(locale, "review.selectFixture")}</label>
-          <select id="rv-fixture" value={fixtureId} onChange={(e) => setFixtureId(e.target.value)}>
+          <select id="rv-fixture" value={fixtureId} onChange={(e) => onFixtureChange(e.target.value)}>
             {fixtures.map((f) => (
               <option key={f.fixture_id} value={f.fixture_id}>
                 {f.title}
@@ -177,6 +216,10 @@ export default function ReviewWorkspacePage({ params }: { params: Promise<{ id: 
             ))}
           </select>
         </div>
+        <p className="tp-muted">
+          {t(locale, "review.fixturePeriod")}: <span className="tp-num">{fixturePeriod}</span>
+        </p>
+        {periodMismatch ? <p className="tp-muted">{t(locale, "review.periodMismatch")}</p> : null}
         <div className="tp-actions">
           <Button type="button" onClick={onRun} disabled={running || !fixtureId}>
             {running ? t(locale, "review.running") : t(locale, "review.run")}
@@ -189,6 +232,18 @@ export default function ReviewWorkspacePage({ params }: { params: Promise<{ id: 
         {run ? (
           <div className="tp-card">
             <h3>{t(locale, "review.summary")}</h3>
+            <p className="tp-muted">
+              {t(locale, "review.engagementPeriod")}:{" "}
+              <span className="tp-num">
+                {engagement?.period_start} – {engagement?.period_end}
+              </span>
+            </p>
+            <p className="tp-muted">
+              {t(locale, "review.fixturePeriod")}:{" "}
+              <span className="tp-num">
+                {run.period_start} – {run.period_end}
+              </span>
+            </p>
             <div className="tp-stats">
               <div className="tp-stat">
                 <div className="tp-stat-value">{total}</div>
@@ -217,6 +272,9 @@ export default function ReviewWorkspacePage({ params }: { params: Promise<{ id: 
                 <span className="tp-num">{`${difference.delta} ${difference.delta_currency ?? ""}`.trim()}</span>
               </p>
             ) : null}
+            <p className="tp-muted">
+              {t(locale, "review.runFixture")}: <span className="tp-num">{run.fixture_id}</span>
+            </p>
             <p className="tp-muted tp-num">
               {t(locale, "review.fingerprint")}: {run.findings_fingerprint.slice(0, 12)}
             </p>
@@ -243,6 +301,12 @@ export default function ReviewWorkspacePage({ params }: { params: Promise<{ id: 
           {SYNTHETIC_LABEL}
         </div>
         <p className="tp-muted">{t(locale, "review.reportsHint")}</p>
+        <p className="tp-muted">
+          {t(locale, "review.exportBinding")}:{" "}
+          <span className="tp-num">
+            {run.fixture_id} · {run.findings_fingerprint.slice(0, 12)}
+          </span>
+        </p>
         <div className="tp-actions">
           <Button type="button" onClick={() => onExport("pdf")} disabled={exporting !== null}>
             {exporting === "pdf" ? t(locale, "review.exporting") : t(locale, "review.reportPdf")}
@@ -284,9 +348,10 @@ export default function ReviewWorkspacePage({ params }: { params: Promise<{ id: 
         <>
           <h1>{t(locale, "review.workspaceTitle")}</h1>
           <p className="tp-muted">
-            {t(locale, "review.periodStart")}: <span className="tp-num">{state.engagement.period_start}</span>
-            {" – "}
-            <span className="tp-num">{state.engagement.period_end}</span>
+            {t(locale, "review.engagementPeriod")}:{" "}
+            <span className="tp-num">
+              {state.engagement.period_start} – {state.engagement.period_end}
+            </span>
             {" · "}
             {t(locale, "review.statusLabel")}: {statusLabel(locale, state.engagement.status)}
           </p>

@@ -63,3 +63,17 @@ def test_xlsx_carries_label_findings_and_evidence() -> None:
         row for row in range(4, evidence_sheet.max_row + 1) if evidence_sheet.cell(row=row, column=1).value
     ]
     assert len(evidence_rows) == sum(len(item.evidence) for item in findings.findings)
+
+
+def test_xlsx_summary_distinguishes_engagement_and_fixture_periods() -> None:
+    fixture = get_fixture(FIXTURE_ID)
+    assert fixture is not None
+    report, findings = run_fixture(fixture, tenant_id="t1", client_id="c1")
+    data = build_xlsx(fixture, report, findings, engagement_period=("2026-02-01", "2026-06-30"))
+    summary = load_workbook(BytesIO(data))["Summary"]
+    rows = {
+        summary.cell(row=row, column=1).value: summary.cell(row=row, column=2).value
+        for row in range(3, summary.max_row + 1)
+    }
+    assert rows["Engagement period"] == "2026-02-01 to 2026-06-30"
+    assert rows["Fixture comparison period"] == "2026-01-01 to 2026-12-31"

@@ -58,16 +58,16 @@ test("dashboard, reviews index, and client detail open the real workspace", asyn
 
   await page.getByRole("link", { name: "Reviews", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Reviews" })).toBeVisible();
-  await expect(page.getByRole("cell", { name: "Synthetic Client" })).toBeVisible();
-  await page.getByRole("link", { name: "Open", exact: true }).click();
+  await expect(page.getByRole("cell", { name: "Synthetic Client" }).first()).toBeVisible();
+  await page.getByRole("link", { name: "Open", exact: true }).first().click();
   await expect(page).toHaveURL(workspaceUrl);
 
   await page.getByRole("link", { name: "Clients", exact: true }).click();
-  await page.getByRole("link", { name: "Open", exact: true }).click();
+  await page.getByRole("link", { name: "Open", exact: true }).first().click();
   await expect(page.getByRole("heading", { name: "Synthetic Client" })).toBeVisible();
   await page.getByRole("tab", { name: "Reviews" }).click();
-  await expect(page.getByRole("cell", { name: "Sales ↔ GL reconciliation" })).toBeVisible();
-  await page.getByRole("link", { name: "Open", exact: true }).click();
+  await expect(page.getByRole("cell", { name: "Sales ↔ GL reconciliation" }).first()).toBeVisible();
+  await page.getByRole("link", { name: "Open", exact: true }).first().click();
   await expect(page).toHaveURL(workspaceUrl);
 });
 

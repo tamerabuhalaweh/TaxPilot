@@ -11,7 +11,7 @@ test("unauthenticated dashboard prompts sign-in, not an empty workspace", async 
   await expect(page.getByRole("link", { name: "Sign in" })).toBeVisible();
 });
 
-test("connected dashboard marks unavailable metrics, never zero KPIs", async ({ page }) => {
+test("connected dashboard reports real workspace counts, never placeholder KPIs", async ({ page }) => {
   // Register + sign in through the real backend, then inspect the dashboard.
   const email = `e2e-metrics-${Date.now()}@example.com`;
   const password = "correct horse battery staple";
@@ -22,13 +22,15 @@ test("connected dashboard marks unavailable metrics, never zero KPIs", async ({ 
   await page.getByLabel("Firm name").fill("Metrics Co");
   await page.getByRole("button", { name: "Create account", exact: true }).click();
   await expect(page).toHaveURL("/");
-  // No review engine exists: every metric honestly reports unavailability.
-  await expect(page.getByText("Coming soon").first()).toBeVisible();
+  // A fresh workspace really has zero clients and reviews: measured zeros, not
+  // invented "coming soon" placeholders.
+  await expect(page.getByText("Coming soon")).toHaveCount(0);
   const stats = page.locator(".tp-stat-value");
   await expect(stats).toHaveCount(4);
   for (const cell of await stats.all()) {
-    await expect(cell).toHaveText("—");
+    await expect(cell).toHaveText("0");
   }
+  await expect(page.getByText("No reviews yet. Start one from the New Review page.")).toBeVisible();
 });
 
 test("backend failure shows a useful error state, not a hang", async ({ page }) => {

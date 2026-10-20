@@ -9,6 +9,7 @@ consistent.
 from __future__ import annotations
 
 from app.demo.fixtures import SYNTHETIC_LABEL, DemoFixture
+from app.demo.summary import build_conclusion
 from app.recon.findings import MoneyView
 from app.recon.gl import (
     GLComparisonReport,
@@ -19,6 +20,9 @@ from app.recon.gl import (
     project_gl,
 )
 from app.schemas.demo_recon import (
+    DemoConclusion,
+    DemoCoverage,
+    DemoCurrencyResult,
     DemoEvidence,
     DemoFinding,
     DemoMoney,
@@ -83,6 +87,32 @@ def _finding(item: GLFinding) -> DemoFinding:
     )
 
 
+def _conclusion(report: GLComparisonReport, findings: GLFindingsReport) -> DemoConclusion:
+    summary = build_conclusion(report, findings)
+    return DemoConclusion(
+        status=summary.status,  # type: ignore[arg-type]
+        headline=summary.headline,
+        detail=summary.detail,
+        caution=summary.caution,
+        currency_results=[
+            DemoCurrencyResult(
+                currency=result.currency,
+                outcome=result.outcome,  # type: ignore[arg-type]
+                sales_total=result.sales_total,
+                gl_total=result.gl_total,
+                delta=result.delta,
+            )
+            for result in summary.currency_results
+        ],
+        coverage=DemoCoverage(
+            complete=summary.coverage_complete,
+            currencies=list(summary.coverage_currencies),
+            reasons=list(summary.coverage_reasons),
+            explanations=list(summary.coverage_explanations),
+        ),
+    )
+
+
 def to_response(
     fixture: DemoFixture, report: GLComparisonReport, findings: GLFindingsReport
 ) -> DemoReconRunOut:
@@ -112,6 +142,7 @@ def to_response(
         findings_fingerprint=findings.fingerprint,
         summary=dict(findings.summary),
         findings=[_finding(item) for item in findings.findings],
+        conclusion=_conclusion(report, findings),
     )
 
 

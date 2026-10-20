@@ -92,6 +92,15 @@ def test_payload_is_always_labelled_synthetic() -> None:
     assert response.findings
     evidence_roles = {ref.role for item in response.findings for ref in item.evidence}
     assert evidence_roles == {"sales", "gl"}
+    assert response.conclusion.status == "REVIEW_REQUIRED"
+    assert response.conclusion.coverage.complete is False
+    assert response.conclusion.coverage.currencies == ["USD"]
+    assert response.conclusion.coverage.reasons == ["COVERAGE_DUPLICATE"]
+    assert [(item.currency, item.outcome) for item in response.conclusion.currency_results] == [
+        ("JOD", "DIFFERENCE"),
+        ("USD", "INCONCLUSIVE_COVERAGE"),
+    ]
+    assert all(item.guidance for item in response.findings)
 
 
 def test_demo_flag_is_off_by_default(monkeypatch) -> None:  # type: ignore[no-untyped-def]

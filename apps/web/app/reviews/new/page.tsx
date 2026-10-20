@@ -149,13 +149,13 @@ export default function NewReviewPage() {
       </div>
       {error ? <Alert message={error} /> : null}
       <h2>{t(locale, "workspace.documents")}</h2>
+      <p className="tp-muted">{t(locale, "review.sourcesDisabled")}</p>
       {sources.map((s) => (
         <div key={s.title} className="tp-card tp-source-card">
           <h3>
             {s.title} <StatusPill label={t(locale, "preview.only")} />
           </h3>
           <p className="tp-muted">{s.hint}</p>
-          <p className="tp-muted">{t(locale, "preview.comingSoon")}</p>
         </div>
       ))}
       <div className="tp-actions">

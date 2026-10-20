@@ -27,6 +27,7 @@ from fastapi import APIRouter, Depends, Query, Request, Response
 from ..demo import fixtures as demo_fixtures
 from ..demo.pdf import Line, build_pdf
 from ..demo.service import run_fixture, to_response
+from ..demo.summary import build_conclusion, ordered_findings
 from ..demo.xlsx import build_xlsx
 from ..deps import settings_singleton
 from ..errors import AppError
@@ -41,6 +42,8 @@ router = APIRouter(tags=["demo-recon"])
 _RUNNABLE_STATES = ("DRAFT", "ACTIVE")
 
 _XLSX_MEDIA = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+_PDF_FOOTER = "Synthetic demo data - not customer records / not a tax filing"
 
 
 def _require_enabled() -> None:
@@ -147,6 +150,7 @@ def _pdf_lines(
     engagement: dict,
 ) -> list[Line]:
     eng_start, eng_end = _engagement_period(engagement)
+    conclusion = build_conclusion(report, findings)
     lines: list[Line] = [
         Line(demo_fixtures.SYNTHETIC_LABEL_ASCII, size=12, font="F2"),
         Line(""),
@@ -171,21 +175,70 @@ def _pdf_lines(
         Line(f"Findings fingerprint: {findings.fingerprint}"),
         Line(f"Sales rows: {report.sales_total}    GL rows: {report.gl_total}"),
         Line(""),
-        Line(f"Findings ({findings.summary.get('total', 0)}):", size=12),
+        Line("RESULT SUMMARY", size=12),
+        Line(conclusion.headline, size=11),
+        Line(conclusion.detail),
+        Line(
+            f"Review required: {findings.summary.get('review_required', 0)}    "
+            f"Informational: {findings.summary.get('informational', 0)}"
+        ),
     ]
-    for index, item in enumerate(findings.findings, start=1):
-        lines.append(Line(f"{index}. [{item.severity}] {item.title}", size=11))
-        lines.append(Line(f"   {item.difference}"))
+    for result in conclusion.currency_results:
+        if result.outcome == "DIFFERENCE":
+            lines.append(
+                Line(
+                    f"{result.currency}: sales {result.sales_total}, GL {result.gl_total}, "
+                    f"difference {result.delta} (tolerance {report.tolerance})"
+                )
+            )
+        else:
+            lines.append(Line(f"{result.currency}: coverage incomplete - no conclusion stated"))
+    if conclusion.coverage_reasons:
+        lines.append(
+            Line(
+                "Coverage reasons: "
+                + "; ".join(
+                    f"{reason} ({text})"
+                    for reason, text in zip(
+                        conclusion.coverage_reasons, conclusion.coverage_explanations, strict=False
+                    )
+                )
+            )
+        )
+    lines.extend([Line(f"Caution: {conclusion.caution}"), Line("")])
+
+    lines.append(Line(f"FINDINGS ({findings.summary.get('total', 0)})", size=12))
+    for index, item in enumerate(ordered_findings(findings.findings), start=1):
+        label = "REVIEW REQUIRED" if item.review_required else "INFORMATIONAL"
+        lines.append(Line(f"{index}. [{item.severity} / {label}] {item.title}", size=11))
+        lines.append(Line(f"   What we compared: {item.compared}"))
+        lines.append(Line(f"   What we found: {item.difference}"))
+        lines.append(Line(f"   Why this matters: {item.why}"))
+        lines.append(Line(f"   What to check next: {item.guidance}"))
         if item.delta is not None:
             lines.append(Line(f"   Delta: {_money_text(item.delta, item.delta_currency)}"))
-        lines.append(Line(f"   Rule {item.rule}  Kind {item.outcome_kind}"))
+        lines.append(Line(f"   Rule {item.rule}    Kind {item.outcome_kind}    Category {item.category}"))
         for ref in item.evidence:
+            side = "Sales register" if ref.role == "sales" else "General ledger"
             lines.append(
-                Line(f"   Source[{ref.role}] {ref.dataset_id} row {ref.row_number} ({ref.raw_reference})")
+                Line(f"   Evidence: {side} | {ref.dataset_id} row {ref.row_number} | {ref.raw_reference}")
             )
+        if item.rationale:
+            lines.append(Line(f"   Rationale: {'; '.join(item.rationale)}"))
+        if item.flags:
+            lines.append(Line(f"   Flags: {', '.join(item.flags)}"))
         lines.append(Line(""))
-    lines.append(
-        Line("Generated deterministically from static synthetic fixtures. No customer data.", font="F2")
+
+    lines.extend(
+        [
+            Line("REPORT NOTES", size=12),
+            Line("Report language: English only (PDF and XLSX)."),
+            Line("Source rows belong to the built-in synthetic scenario, not client files."),
+            Line(
+                "Generated deterministically from static synthetic fixtures. No customer data.",
+                font="F2",
+            ),
+        ]
     )
     return lines
 
@@ -244,7 +297,7 @@ def export_demo_recon(
         content = build_xlsx(fixture, report, findings, engagement_period=_engagement_period(engagement))
         media_type = _XLSX_MEDIA
     else:
-        content = build_pdf(_pdf_lines(fixture, report, findings, engagement))
+        content = build_pdf(_pdf_lines(fixture, report, findings, engagement), footer=_PDF_FOOTER)
         media_type = "application/pdf"
     return Response(
         content=content,

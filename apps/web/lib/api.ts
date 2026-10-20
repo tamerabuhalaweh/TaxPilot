@@ -138,3 +138,172 @@ export async function createClient(name: string): Promise<ClientPayload> {
     body: JSON.stringify({ name })
   });
 }
+
+/** Engagement (review) record from the workspace API. */
+export interface EngagementPayload {
+  id: string;
+  client_id: string;
+  review_type: string;
+  period_start: string;
+  period_end: string;
+  status: "DRAFT" | "ACTIVE" | "CLOSED" | "ARCHIVED";
+  revision: number;
+  created_at: string;
+}
+
+export async function listEngagements(clientId?: string): Promise<EngagementPayload[]> {
+  const query = clientId ? `?client_id=${encodeURIComponent(clientId)}` : "";
+  return request<EngagementPayload[]>(`/api/v1/engagements${query}`);
+}
+
+export async function getEngagement(id: string): Promise<EngagementPayload> {
+  return request<EngagementPayload>(`/api/v1/engagements/${encodeURIComponent(id)}`);
+}
+
+export async function createEngagement(input: {
+  client_id: string;
+  review_type: string;
+  period_start: string;
+  period_end: string;
+}): Promise<EngagementPayload> {
+  return request<EngagementPayload>("/api/v1/engagements", {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
+}
+
+/** Restricted synthetic-demo reconciliation payloads (REC-UI-01). */
+export interface DemoFixturePayload {
+  fixture_id: string;
+  title: string;
+  description: string;
+  jurisdiction: string;
+  rules_version: string;
+  period_start: string;
+  period_end: string;
+  sales_dataset_id: string;
+  gl_dataset_id: string;
+  account_scope: string[];
+  currency_scope: string[];
+}
+
+export interface DemoMoney {
+  amount: string;
+  currency: string;
+}
+
+export interface DemoEvidence {
+  dataset_id: string;
+  source: string;
+  row_number: number;
+  raw_reference: string;
+  role: "sales" | "gl";
+}
+
+export interface DemoFinding {
+  finding_id: string;
+  category: string;
+  severity: string;
+  review_state: string | null;
+  review_required: boolean;
+  rule: string;
+  outcome_kind: string;
+  title: string;
+  what: string;
+  compared: string;
+  difference: string;
+  why: string;
+  guidance: string;
+  sales: DemoMoney[];
+  gl: DemoMoney[];
+  delta: string | null;
+  delta_currency: string | null;
+  evidence: DemoEvidence[];
+  rationale: string[];
+  flags: string[];
+}
+
+export interface DemoRunPayload {
+  synthetic: boolean;
+  label: string;
+  fixture_id: string;
+  fixture_title: string;
+  jurisdiction: string;
+  rules_version: string;
+  period_start: string;
+  period_end: string;
+  policy_id: string | null;
+  policy_version: string | null;
+  comparison_basis: string | null;
+  sales_measure: string | null;
+  gl_account_scope: string[];
+  debit_credit_convention: string | null;
+  currency_scope: string[];
+  tolerance: string | null;
+  blocked: boolean;
+  block_reasons: string[];
+  inconclusive: boolean;
+  inconclusive_reasons: string[];
+  recon_fingerprint: string;
+  findings_fingerprint: string;
+  summary: Record<string, unknown>;
+  findings: DemoFinding[];
+}
+
+export async function listDemoFixtures(): Promise<DemoFixturePayload[]> {
+  return request<DemoFixturePayload[]>("/api/v1/demo-recon/fixtures");
+}
+
+export async function runDemoRecon(engagementId: string, fixtureId: string): Promise<DemoRunPayload> {
+  return request<DemoRunPayload>(
+    `/api/v1/engagements/${encodeURIComponent(engagementId)}/demo-recon-runs`,
+    { method: "POST", body: JSON.stringify({ fixture_id: fixtureId }) }
+  );
+}
+
+export interface DemoReportBinding {
+  fixtureId: string;
+  reconFingerprint: string;
+  findingsFingerprint: string;
+}
+
+/** Download a deterministic, labelled demo report bound to the displayed run.
+ *
+ * The fingerprints are sent as expected values so the API refuses to export a
+ * report that does not match what the reviewer is looking at. */
+export async function downloadDemoReport(
+  engagementId: string,
+  binding: DemoReportBinding,
+  format: "pdf" | "xlsx"
+): Promise<void> {
+  const params = new URLSearchParams({
+    fixture_id: binding.fixtureId,
+    format,
+    expected_recon_fingerprint: binding.reconFingerprint,
+    expected_findings_fingerprint: binding.findingsFingerprint
+  });
+  const res = await fetch(
+    `/api/v1/engagements/${encodeURIComponent(engagementId)}/demo-recon-runs/report?${params.toString()}`
+  );
+  if (!res.ok) {
+    let code = `HTTP_${res.status}`;
+    let message = `Export failed: ${res.status}`;
+    try {
+      const body = (await res.json()) as ApiError;
+      code = body.error.code;
+      message = body.error.message;
+    } catch {
+      /* keep generic */
+    }
+    throw new ApiRequestError(code, message, res.status);
+  }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = `synthetic-recon-${binding.fixtureId}.${format}`;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+}

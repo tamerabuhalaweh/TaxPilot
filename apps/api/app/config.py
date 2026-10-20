@@ -2,7 +2,7 @@
 
 from typing import Literal
 
-from pydantic import model_validator
+from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _DEV_DATABASE_URL = "postgresql+psycopg://taxpilot:taxpilot@localhost:5432/taxpilot"
@@ -12,7 +12,7 @@ Environment = Literal["development", "staging", "test", "production"]
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore", populate_by_name=True)
 
     app_name: str = "taxpilot-api"
     environment: Environment = "development"
@@ -56,6 +56,15 @@ class Settings(BaseSettings):
     storage_backend: str = "local"
     quarantine_root: str | None = None
 
+    # REC-UI-01: restricted synthetic-demo reconciliation boundary. Off by
+    # default and forced off in production. It accepts no uploaded files,
+    # reads no quarantine, and persists nothing: fixtures are static and
+    # versioned server-side, and the run is rebuilt in memory per request.
+    demo_recon_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("TAXPILOT_DEMO_RECON_ENABLED", "DEMO_RECON_ENABLED"),
+    )
+
     @model_validator(mode="after")
     def _guard(self) -> "Settings":
         if self.auth_expose_tokens is None:
@@ -69,6 +78,9 @@ class Settings(BaseSettings):
                 raise ValueError("production requires explicit cors_allowed_origins")
             if self.auth_expose_tokens:
                 raise ValueError("production refuses auth_expose_tokens (verification/invite tokens)")
+            # Never expose the synthetic demo boundary in production, regardless
+            # of how the environment tries to set it.
+            self.demo_recon_enabled = False
         if self.environment in ("staging", "production") and self.auth_expose_tokens:
             raise ValueError(f"{self.environment} refuses auth_expose_tokens")
         if self.queue_backend not in ("redis", "memory"):

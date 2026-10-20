@@ -111,7 +111,19 @@ export default function ClientDetailPage({ params }: { params: Promise<{ id: str
           <Tabs
             tabs={[
               { id: "profile", label: t(locale, "client.profile"), content: <PreviewOnly locale={locale} /> },
-              { id: "reviews", label: t(locale, "client.engagements"), content: <PreviewOnly locale={locale} /> },
+              {
+                id: "reviews",
+                label: t(locale, "client.engagements"),
+                content: (
+                  <PreviewOnly locale={locale}>
+                    <p>
+                      <Link href={`/reviews/new?client=${encodeURIComponent(id)}`} className="tp-primary">
+                        {t(locale, "dashboard.newReview")}
+                      </Link>
+                    </p>
+                  </PreviewOnly>
+                )
+              },
               { id: "documents", label: t(locale, "client.documents"), content: <PreviewOnly locale={locale} /> },
               { id: "findings", label: t(locale, "client.findings"), content: <PreviewOnly locale={locale} /> },
               { id: "reports", label: t(locale, "client.reports"), content: <PreviewOnly locale={locale} /> }

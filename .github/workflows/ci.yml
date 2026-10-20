@@ -212,6 +212,9 @@ jobs:
           REDIS_URL: redis://localhost:6379/0
           API_INTERNAL_URL: http://127.0.0.1:8000
           E2E_BASE_URL: http://127.0.0.1:3000
+          # Restricted synthetic demo (REC-UI-01) is enabled ONLY for this job;
+          # production forces it off regardless of this value.
+          TAXPILOT_DEMO_RECON_ENABLED: "1"
         run: |
           python -m uvicorn app.main:app --port 8000 --app-dir ../api &
           echo $! > /tmp/tp-api.pid
@@ -219,7 +222,7 @@ jobs:
           echo $! > /tmp/tp-web.pid
           sleep 12
           curl -fsS http://127.0.0.1:3000/api/v1/health
-          npx playwright test e2e/auth.spec.ts e2e/reviews.spec.ts e2e/proxy.spec.ts
+          npx playwright test e2e/auth.spec.ts e2e/reviews.spec.ts e2e/proxy.spec.ts e2e/rec-ui01.spec.ts
           kill "$(cat /tmp/tp-api.pid)" "$(cat /tmp/tp-web.pid)"
 
   browser-demo:

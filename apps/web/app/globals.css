@@ -155,6 +155,40 @@ table.tp-table tbody tr:hover { background: #f4f7fc; }
 /* Numeric/code values keep logical direction in RTL layouts */
 .tp-num { direction: ltr; unicode-bidi: embed; font-variant-numeric: tabular-nums; }
 
+/* Reconciliation workspace */
+.tp-stat {
+  background: #fff;
+  border: 1px solid #e3e9f2;
+  border-radius: var(--tp-radius);
+  padding: var(--tp-space-2);
+}
+.tp-synth {
+  margin: var(--tp-space-2) 0;
+  padding: 10px 14px;
+  border: 1px dashed #b98900;
+  background: #fff8e1;
+  color: #6b4e00;
+  border-radius: var(--tp-radius);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.tp-finding { margin-bottom: var(--tp-space-2); }
+.tp-finding-head { display: flex; align-items: center; gap: 10px; }
+.tp-sev {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.tp-sev-high { background: #fdecea; color: #a4231a; }
+.tp-sev-medium { background: #fff4e5; color: #8a5a00; }
+.tp-sev-low { background: #eef2f8; color: #3b4a5f; }
+table.tp-table caption { text-align: start; padding: 6px 0; font-size: 13px; }
+
 @media (max-width: 720px) {
   .tp-stats { grid-template-columns: repeat(2, 1fr); }
   .tp-grid-2 { grid-template-columns: 1fr; }

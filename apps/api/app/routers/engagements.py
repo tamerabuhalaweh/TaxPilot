@@ -51,8 +51,12 @@ from ..sprint1_auth import (
     require_tenant,
     tenant_of,
 )
+from .demo_recon import router as demo_recon_router
 
 router = APIRouter(tags=["engagements"])
+# REC-UI-01: the restricted synthetic-demo boundary rides on this router (main.py
+# is owned by an open PR and left untouched). See routers/demo_recon.py.
+router.include_router(demo_recon_router)
 
 _TRANSITIONS: dict[str, set[str]] = {
     "DRAFT": {"ACTIVE", "ARCHIVED"},

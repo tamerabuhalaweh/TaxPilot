@@ -6,7 +6,10 @@ import { use, useEffect, useRef, useState } from "react";
 import { Alert } from "../../../components/Alert";
 import { Button } from "../../../components/Button";
 import { EmptyState } from "../../../components/EmptyState";
+import { Icon } from "../../../components/Icon";
+import { PageHeader } from "../../../components/PageHeader";
 import { DemoBanner } from "../../../components/Preview";
+import { StatCard } from "../../../components/StatCard";
 import { StatusPill } from "../../../components/StatusPill";
 import { Tabs } from "../../../components/Tabs";
 import { useLocale } from "../../../components/LocaleProvider";
@@ -25,6 +28,7 @@ import {
   type DemoRunPayload,
   type EngagementPayload
 } from "../../../lib/api";
+import { initials } from "../../../lib/format";
 import { t, type Locale } from "../../../lib/i18n";
 
 /** The synthetic marker is a fixed English contract string, repeated on screen
@@ -48,6 +52,21 @@ function money(value: DemoMoney): string {
 
 function statusLabel(locale: Locale, status: string): string {
   return t(locale, `review.status.${status.toLowerCase()}`);
+}
+
+function statusTone(status: string): "neutral" | "info" | "success" | "warning" {
+  switch (status.toLowerCase()) {
+    case "approved":
+    case "closed":
+      return "success";
+    case "in_progress":
+    case "active":
+      return "info";
+    case "ready_for_approval":
+      return "warning";
+    default:
+      return "neutral";
+  }
 }
 
 const OUTCOME_LABEL_KEYS: Record<string, string> = {
@@ -420,36 +439,42 @@ export default function ReviewWorkspacePage({ params }: { params: Promise<{ id: 
               ).replace("{currencies}", coverage.currencies.join(", "));
     return (
       <div>
-        <div className="tp-field">
-          <label htmlFor="rv-fixture">{t(locale, "review.selectFixture")}</label>
-          <select id="rv-fixture" value={fixtureId} onChange={(e) => onFixtureChange(e.target.value)}>
-            {fixtures.map((f) => (
-              <option key={f.fixture_id} value={f.fixture_id}>
-                {f.title}
-              </option>
-            ))}
-          </select>
-        </div>
-        <p className="tp-muted">
-          {t(locale, "review.fixturePeriod")}:{" "}
-          <span className="tp-num" dir="ltr">
-            {fixturePeriod}
-          </span>
-        </p>
-        {periodMismatch ? <p className="tp-muted">{t(locale, "review.periodMismatch")}</p> : null}
-        <div className="tp-actions">
-          <Button type="button" onClick={onRun} disabled={running || !fixtureId}>
-            {running ? t(locale, "review.running") : t(locale, "review.run")}
-          </Button>
-        </div>
+        <section className="tp-run-setup">
+          <div className="tp-field">
+            <label htmlFor="rv-fixture">{t(locale, "review.selectFixture")}</label>
+            <select id="rv-fixture" value={fixtureId} onChange={(e) => onFixtureChange(e.target.value)}>
+              {fixtures.map((f) => (
+                <option key={f.fixture_id} value={f.fixture_id}>
+                  {f.title}
+                </option>
+              ))}
+            </select>
+            <p className="tp-muted">
+              {t(locale, "review.fixturePeriod")}:{" "}
+              <span className="tp-num" dir="ltr">
+                {fixturePeriod}
+              </span>
+            </p>
+            {periodMismatch ? <p className="tp-muted">{t(locale, "review.periodMismatch")}</p> : null}
+          </div>
+          <div className="tp-run-action">
+            <Button type="button" onClick={onRun} disabled={running || !fixtureId}>
+              <Icon name="play" size={16} />
+              {running ? t(locale, "review.running") : t(locale, "review.run")}
+            </Button>
+          </div>
+        </section>
         {runError ? <Alert message={runError} /> : null}
         <div className="tp-synth" role="note">
           {SYNTHETIC_LABEL}
         </div>
         <p className="tp-muted">{t(locale, "review.syntheticDataNote")}</p>
         {run ? (
-          <div className="tp-card">
-            <h3>{t(locale, "review.summary")}</h3>
+          <section className="tp-panel tp-run-card">
+            <div className="tp-panel-head">
+              <h3>{t(locale, "review.summary")}</h3>
+              <StatusPill label={t(locale, "review.syntheticTag")} tone="warning" />
+            </div>
             <p className="tp-muted">
               {t(locale, "review.engagementPeriod")}:{" "}
               <span className="tp-num" dir="ltr">
@@ -463,22 +488,26 @@ export default function ReviewWorkspacePage({ params }: { params: Promise<{ id: 
               </span>
             </p>
             <div className="tp-stats">
-              <div className="tp-stat">
-                <div className="tp-stat-value">{total}</div>
-                <div className="tp-stat-label">{t(locale, "review.findingsCount")}</div>
-              </div>
-              <div className="tp-stat">
-                <div className="tp-stat-value">{reviewRequired}</div>
-                <div className="tp-stat-label">{t(locale, "review.reviewRequired")}</div>
-              </div>
-              <div className="tp-stat">
-                <div className="tp-stat-value">{informational}</div>
-                <div className="tp-stat-label">{t(locale, "review.informational")}</div>
-              </div>
-              <div className="tp-stat">
-                <div className="tp-stat-value">{inconclusiveCount}</div>
-                <div className="tp-stat-label">{t(locale, "review.inconclusive")}</div>
-              </div>
+              <StatCard
+                label={t(locale, "review.findingsCount")}
+                value={String(total)}
+                icon="file"
+              />
+              <StatCard
+                label={t(locale, "review.reviewRequired")}
+                value={String(reviewRequired)}
+                icon="alert"
+              />
+              <StatCard
+                label={t(locale, "review.informational")}
+                value={String(informational)}
+                icon="check"
+              />
+              <StatCard
+                label={t(locale, "review.inconclusive")}
+                value={inconclusiveCount}
+                icon="clock"
+              />
             </div>
 
             <div className={`tp-conclusion tp-conclusion-${run.conclusion.status.toLowerCase()}`} role="status">
@@ -576,10 +605,11 @@ export default function ReviewWorkspacePage({ params }: { params: Promise<{ id: 
             <p className="tp-muted">
               {t(locale, "review.runFixture")}: <span className="tp-num">{run.fixture_id}</span>
             </p>
-            <p className="tp-muted tp-num">
-              {t(locale, "review.fingerprint")}: {run.findings_fingerprint.slice(0, 12)}
+            <p className="tp-muted">
+              {t(locale, "review.fingerprint")}:{" "}
+              <span className="tp-num">{run.findings_fingerprint.slice(0, 12)}</span>
             </p>
-          </div>
+          </section>
         ) : (
           <EmptyState title={t(locale, "review.noRunTitle")} hint={t(locale, "review.noRun")} />
         )}
@@ -683,39 +713,69 @@ export default function ReviewWorkspacePage({ params }: { params: Promise<{ id: 
         <LocaleControls locale={locale} onChange={setLocale} />
       </div>
       <DemoBanner locale={locale} />
-      <p>
-        <Link href="/reviews">← {t(locale, "nav.reviews")}</Link>
-      </p>
       {state.kind === "not-found" ? (
-        <EmptyState title={t(locale, "review.notFound")} hint={t(locale, "review.notFoundHint")} />
+        <>
+          <PageHeader
+            back={{ href: "/reviews", label: t(locale, "nav.reviews") }}
+            title={t(locale, "review.notFound")}
+          />
+          <EmptyState title={t(locale, "review.notFound")} hint={t(locale, "review.notFoundHint")} icon="reviews" />
+        </>
       ) : state.kind === "denied" ? (
-        <div className="tp-actions">
-          <EmptyState title={t(locale, "dashboard.signinRequired")} hint={t(locale, "dashboard.signinRequiredHint")} />
-          <Link href="/login" className="tp-primary">
-            {t(locale, "dashboard.signin")}
-          </Link>
-        </div>
+        <>
+          <PageHeader
+            back={{ href: "/reviews", label: t(locale, "nav.reviews") }}
+            title={t(locale, "review.workspaceTitle")}
+          />
+          <EmptyState
+            title={t(locale, "dashboard.signinRequired")}
+            hint={t(locale, "dashboard.signinRequiredHint")}
+            icon="shield"
+            action={
+              <Link href="/login" className="tp-primary">
+                {t(locale, "dashboard.signin")}
+              </Link>
+            }
+          />
+        </>
       ) : state.kind === "unreachable" ? (
-        <Alert message={t(locale, "review.loadError")} />
+        <>
+          <PageHeader
+            back={{ href: "/reviews", label: t(locale, "nav.reviews") }}
+            title={t(locale, "review.workspaceTitle")}
+          />
+          <Alert message={t(locale, "review.loadError")} />
+        </>
       ) : state.kind === "ready" ? (
         <>
-          <h1>{t(locale, "review.workspaceTitle")}</h1>
-          <p className="tp-workspace-meta">
-            <span>
-              {t(locale, "review.clientLabel")}:{" "}
-              <Link href={`/clients/${state.engagement.client_id}`}>{clientName ?? "—"}</Link>
+          <PageHeader
+            back={{ href: "/reviews", label: t(locale, "nav.reviews") }}
+            title={t(locale, "review.workspaceTitle")}
+            description={t(locale, "review.workspaceHint")}
+          />
+          <section className="tp-workspace-hero tp-workspace-meta">
+            <span className="tp-avatar tp-avatar-lg" aria-hidden="true">
+              {initials(clientName ?? "")}
             </span>
-            <span>{t(locale, "review.reviewTypeLabel")}: {typeLabel(locale, state.engagement.review_type)}</span>
-            <StatusPill label={statusLabel(locale, state.engagement.status)} />
-            <span className="tp-pill">{t(locale, "review.syntheticTag")}</span>
-          </p>
-          <p className="tp-muted">
-            {t(locale, "review.engagementPeriod")}:{" "}
-            <span className="tp-num" dir="ltr">
-              {state.engagement.period_start} – {state.engagement.period_end}
-            </span>
-          </p>
-          <p className="tp-muted">{t(locale, "review.workspaceHint")}</p>
+            <div className="tp-workspace-identity">
+              <p className="tp-workspace-client">
+                <Link href={`/clients/${state.engagement.client_id}`}>{clientName ?? "—"}</Link>
+              </p>
+              <p className="tp-muted">
+                {typeLabel(locale, state.engagement.review_type)} ·{" "}
+                <span className="tp-num" dir="ltr">
+                  {state.engagement.period_start} – {state.engagement.period_end}
+                </span>
+              </p>
+            </div>
+            <div className="tp-workspace-badges">
+              <StatusPill
+                label={statusLabel(locale, state.engagement.status)}
+                tone={statusTone(state.engagement.status)}
+              />
+              <span className="tp-pill tp-pill-warning">{t(locale, "review.syntheticTag")}</span>
+            </div>
+          </section>
           <Tabs
             tabs={[
               { id: "reconciliation", label: t(locale, "workspace.reconciliation"), content: reconciliationTab() },
@@ -725,10 +785,10 @@ export default function ReviewWorkspacePage({ params }: { params: Promise<{ id: 
                 id: "documents",
                 label: t(locale, "workspace.documents"),
                 content: (
-                  <div className="tp-card">
+                  <section className="tp-panel">
                     <h2>{t(locale, "review.documentsUnavailable")}</h2>
                     <p className="tp-muted">{t(locale, "review.documentsHint")}</p>
-                  </div>
+                  </section>
                 )
               }
             ]}

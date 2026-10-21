@@ -4,6 +4,8 @@ import Link from "next/link";
 import { useState } from "react";
 import { Alert } from "../../components/Alert";
 import { Button } from "../../components/Button";
+import { Icon } from "../../components/Icon";
+import { LocaleControls } from "../../components/LocaleControls";
 import { DemoBanner } from "../../components/Preview";
 import { ApiRequestError, login, register, verifyAccount } from "../../lib/api";
 import { t } from "../../lib/i18n";
@@ -51,89 +53,121 @@ export default function LoginPage() {
   }
 
   return (
-    <main>
-      <p>
-        <Link href="/">← {t(locale, "auth.back")}</Link>
-      </p>
-      <h1>{mode === "login" ? t(locale, "auth.signin") : t(locale, "auth.createAccount")}</h1>
-      <DemoBanner locale={locale} />
-      <div className="tp-actions" role="group" aria-label="locale">
-        <Button onClick={() => setLocale("en")} disabled={locale === "en"}>
-          English
-        </Button>
-        <Button onClick={() => setLocale("ar")} disabled={locale === "ar"}>
-          العربية
-        </Button>
-      </div>
-      {isDemoMode() ? (
-        <div className="tp-card" role="status">
-          <p>{t(locale, "demo.authDisabled")}</p>
-          <div className="tp-actions">
-            <Link href="/" className="tp-primary">
-              {t(locale, "demo.explore")}
-            </Link>
-          </div>
+    <main className="tp-auth">
+      <aside className="tp-auth-brand">
+        <Link href="/" className="tp-brand">
+          TaxPilot
+        </Link>
+        <div className="tp-auth-copy">
+          <h1>{t(locale, "auth.brandLine")}</h1>
+          <p>{t(locale, "auth.brandHint")}</p>
         </div>
-      ) : (
-        <>
-          {error ? <Alert message={error} /> : null}
-          {notice ? (
-            <div className="tp-card" role="status">
-              {notice}
-            </div>
-          ) : null}
-          <form onSubmit={submit}>
-            <p>
-              <label>
-                {t(locale, "auth.email")}
-                <br />
-                <input
-                  type="email"
-                  autoComplete="email"
-                  required
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                />
-              </label>
-            </p>
-            <p>
-              <label>
-                {t(locale, "auth.password")}
-                <br />
-                <input
-                  type="password"
-                  autoComplete={mode === "login" ? "current-password" : "new-password"}
-                  required
-                  minLength={12}
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                />
-              </label>
-            </p>
-            {mode === "register" ? (
-              <p>
-                <label>
-                  {t(locale, "auth.firmName")}
-                  <br />
-                  <input required value={firm} onChange={(e) => setFirm(e.target.value)} />
-                </label>
-              </p>
-            ) : null}
-            <div className="tp-actions">
-              <Button type="submit" disabled={busy}>
-                {mode === "login" ? t(locale, "auth.signin") : t(locale, "auth.createAccount")}
-              </Button>
-            </div>
-          </form>
-          <div className="tp-actions">
-            <Button type="button" disabled={busy} onClick={() => setMode(mode === "login" ? "register" : "login")}>
-              {mode === "login" ? t(locale, "auth.needAccount") : t(locale, "auth.haveAccount")}
-            </Button>
+        <ul className="tp-auth-features">
+          <li>
+            <Icon name="shield" size={18} />
+            {t(locale, "auth.featureEvidence")}
+          </li>
+          <li>
+            <Icon name="globe" size={18} />
+            {t(locale, "auth.featureBilingual")}
+          </li>
+          <li>
+            <Icon name="file" size={18} />
+            {t(locale, "auth.featureSynthetic")}
+          </li>
+        </ul>
+      </aside>
+
+      <section className="tp-auth-panel">
+        <div className="tp-auth-card">
+          <div className="tp-auth-topline">
+            <Link href="/" className="tp-back">
+              <span aria-hidden="true">←</span>
+              {t(locale, "auth.back")}
+            </Link>
+            <LocaleControls locale={locale} onChange={setLocale} />
           </div>
-        </>
-      )}
+
+          <h1>{mode === "login" ? t(locale, "auth.signin") : t(locale, "auth.createAccount")}</h1>
+          <p className="tp-auth-lead">
+            {mode === "login" ? t(locale, "auth.signinLead") : t(locale, "auth.registerLead")}
+          </p>
+          <DemoBanner locale={locale} />
+
+          {isDemoMode() ? (
+            <div className="tp-card" role="status">
+              <p>{t(locale, "demo.authDisabled")}</p>
+              <div className="tp-actions">
+                <Link href="/" className="tp-primary">
+                  {t(locale, "demo.explore")}
+                </Link>
+              </div>
+            </div>
+          ) : (
+            <>
+              {error ? <Alert message={error} /> : null}
+              {notice ? (
+                <div className="tp-card tp-auth-notice" role="status">
+                  {notice}
+                </div>
+              ) : null}
+              <form onSubmit={submit}>
+                <div className="tp-field">
+                  <label htmlFor="auth-email">{t(locale, "auth.email")}</label>
+                  <input
+                    id="auth-email"
+                    type="email"
+                    autoComplete="email"
+                    required
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                  />
+                </div>
+                <div className="tp-field">
+                  <label htmlFor="auth-password">{t(locale, "auth.password")}</label>
+                  <input
+                    id="auth-password"
+                    type="password"
+                    autoComplete={mode === "login" ? "current-password" : "new-password"}
+                    required
+                    minLength={12}
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                  />
+                </div>
+                {mode === "register" ? (
+                  <div className="tp-field">
+                    <label htmlFor="auth-firm">{t(locale, "auth.firmName")}</label>
+                    <input
+                      id="auth-firm"
+                      required
+                      maxLength={200}
+                      value={firm}
+                      onChange={(e) => setFirm(e.target.value)}
+                    />
+                  </div>
+                ) : null}
+                <div className="tp-actions">
+                  <Button type="submit" disabled={busy}>
+                    {mode === "login" ? t(locale, "auth.signin") : t(locale, "auth.createAccount")}
+                  </Button>
+                </div>
+              </form>
+              <div className="tp-auth-switch">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  disabled={busy}
+                  onClick={() => setMode(mode === "login" ? "register" : "login")}
+                >
+                  {mode === "login" ? t(locale, "auth.needAccount") : t(locale, "auth.haveAccount")}
+                </Button>
+              </div>
+            </>
+          )}
+          <p className="tp-auth-note">{t(locale, "auth.securityNote")}</p>
+        </div>
+      </section>
     </main>
   );
 }
-
-

@@ -4,11 +4,14 @@ import Link from "next/link";
 import { use, useEffect, useState } from "react";
 import { DemoBanner, PreviewOnly } from "../../../components/Preview";
 import { Alert } from "../../../components/Alert";
+import { EmptyState } from "../../../components/EmptyState";
+import { Icon } from "../../../components/Icon";
+import { PageHeader } from "../../../components/PageHeader";
 import { useLocale } from "../../../components/LocaleProvider";
 import { LocaleControls } from "../../../components/LocaleControls";
 import { Nav } from "../../../components/Nav";
+import { StatusPill } from "../../../components/StatusPill";
 import { Tabs } from "../../../components/Tabs";
-import { EmptyState } from "../../../components/EmptyState";
 import {
   ApiRequestError,
   getClient,
@@ -17,6 +20,7 @@ import {
   type EngagementPayload
 } from "../../../lib/api";
 import { DEMO_CLIENTS, DEMO_REVIEWS } from "../../../lib/demo-data";
+import { initials } from "../../../lib/format";
 import { t } from "../../../lib/i18n";
 import { isDemoMode } from "../../../lib/preview";
 
@@ -25,6 +29,7 @@ interface ReviewRow {
   period: string;
   type: string;
   status: string;
+  tone: "neutral" | "info" | "success" | "warning";
   openable: boolean;
 }
 
@@ -43,12 +48,28 @@ function statusLabel(locale: "en" | "ar", status: string): string {
   return t(locale, `review.status.${status.toLowerCase()}`);
 }
 
+function statusTone(status: string): "neutral" | "info" | "success" | "warning" {
+  switch (status.toLowerCase()) {
+    case "approved":
+    case "closed":
+      return "success";
+    case "in_progress":
+    case "active":
+      return "info";
+    case "ready_for_approval":
+      return "warning";
+    default:
+      return "neutral";
+  }
+}
+
 function toRow(locale: "en" | "ar", engagement: EngagementPayload): ReviewRow {
   return {
     id: engagement.id,
     period: `${engagement.period_start} – ${engagement.period_end}`,
     type: typeLabel(locale, engagement.review_type),
     status: statusLabel(locale, engagement.status),
+    tone: statusTone(engagement.status),
     openable: true
   };
 }
@@ -84,6 +105,7 @@ export default function ClientDetailPage({ params }: { params: Promise<{ id: str
           period: review.period,
           type: locale === "ar" ? review.typeAr : review.type,
           status: t(locale, `review.status.${review.status}`),
+          tone: statusTone(review.status),
           openable: false
         }))
       );
@@ -108,13 +130,26 @@ export default function ClientDetailPage({ params }: { params: Promise<{ id: str
   }, [id, locale, demo]);
 
   const client = state.kind === "ready" ? state.client : null;
+  const active = client?.status === "active";
 
   const reviewsTab = (
-    <div>
-      <h2>{t(locale, "client.reviewsTitle")}</h2>
-      <p className="tp-muted">{t(locale, "client.reviewsHint")}</p>
+    <section className="tp-panel">
+      <div className="tp-panel-head">
+        <div>
+          <h2>{t(locale, "client.reviewsTitle")}</h2>
+          <p className="tp-muted">{t(locale, "client.reviewsHint")}</p>
+        </div>
+        <Link href={`/reviews/new?client=${encodeURIComponent(id)}`} className="tp-button tp-button-primary">
+          <Icon name="plus" size={16} />
+          {t(locale, "dashboard.newReview")}
+        </Link>
+      </div>
       {rows.length === 0 ? (
-        <EmptyState title={t(locale, "client.reviewsTitle")} hint={t(locale, "client.noReviews")} />
+        <EmptyState
+          title={t(locale, "client.reviewsTitle")}
+          hint={t(locale, "client.noReviews")}
+          icon="reviews"
+        />
       ) : (
         <div className="tp-table-wrap">
           <table className="tp-table">
@@ -133,10 +168,15 @@ export default function ClientDetailPage({ params }: { params: Promise<{ id: str
                     {row.period}
                   </td>
                   <td>{row.type}</td>
-                  <td>{row.status}</td>
+                  <td>
+                    <StatusPill label={row.status} tone={row.tone} />
+                  </td>
                   {row.openable ? (
                     <td>
-                      <Link href={`/reviews/${row.id}`}>{t(locale, "clients.open")}</Link>
+                      <Link href={`/reviews/${row.id}`} className="tp-row-link">
+                        {t(locale, "clients.open")}
+                        <Icon name="arrow" size={14} />
+                      </Link>
                     </td>
                   ) : null}
                 </tr>
@@ -145,35 +185,62 @@ export default function ClientDetailPage({ params }: { params: Promise<{ id: str
           </table>
         </div>
       )}
-      <div className="tp-actions">
-        <Link href={`/reviews/new?client=${encodeURIComponent(id)}`} className="tp-primary">
-          {t(locale, "dashboard.newReview")}
-        </Link>
-      </div>
-    </div>
+    </section>
   );
 
   const profileTab = (
-    <div className="tp-card">
-      <dl className="tp-kv">
-        <div>
-          <dt>{t(locale, "clients.name")}</dt>
-          <dd>{client?.name}</dd>
+    <div className="tp-detail-grid">
+      <section className="tp-panel">
+        <div className="tp-panel-head">
+          <h2>{t(locale, "client.profile")}</h2>
+          <StatusPill
+            label={active ? t(locale, "clients.active") : t(locale, "clients.archived")}
+            tone={active ? "success" : "neutral"}
+          />
         </div>
-        <div>
-          <dt>{t(locale, "clients.status")}</dt>
-          <dd>{client?.status === "active" ? t(locale, "clients.active") : t(locale, "clients.archived")}</dd>
+        <dl className="tp-kv">
+          <div>
+            <dt>{t(locale, "clients.name")}</dt>
+            <dd>{client?.name}</dd>
+          </div>
+          <div>
+            <dt>{t(locale, "clients.status")}</dt>
+            <dd>{active ? t(locale, "clients.active") : t(locale, "clients.archived")}</dd>
+          </div>
+          <div>
+            <dt>{t(locale, "clients.sector")}</dt>
+            <dd>{client?.sector ?? "—"}</dd>
+          </div>
+          <div>
+            <dt>{t(locale, "client.reviewsCount")}</dt>
+            <dd className="tp-num">{rows.length}</dd>
+          </div>
+        </dl>
+        <p className="tp-muted">{t(locale, "client.profileHint")}</p>
+      </section>
+      <aside className="tp-panel">
+        <div className="tp-panel-head">
+          <h2>{t(locale, "client.engagements")}</h2>
         </div>
-        <div>
-          <dt>{t(locale, "clients.sector")}</dt>
-          <dd>{client?.sector ?? "—"}</dd>
+        <div className="tp-status-list">
+          <div className="tp-status-item">
+            <span className="tp-status-label">{t(locale, "client.reviewsCount")}</span>
+            <span className="tp-status-value tp-num">{rows.length}</span>
+          </div>
+          <div className="tp-status-item">
+            <span className="tp-status-label">{t(locale, "clients.status")}</span>
+            <span className="tp-status-value">
+              {active ? t(locale, "clients.active") : t(locale, "clients.archived")}
+            </span>
+          </div>
         </div>
-        <div>
-          <dt>{t(locale, "client.reviewsCount")}</dt>
-          <dd className="tp-num">{rows.length}</dd>
+        <div className="tp-inline-actions">
+          <Link href={`/reviews/new?client=${encodeURIComponent(id)}`} className="tp-button tp-button-primary">
+            <Icon name="plus" size={16} />
+            {t(locale, "dashboard.newReview")}
+          </Link>
         </div>
-      </dl>
-      <p className="tp-muted">{t(locale, "client.profileHint")}</p>
+      </aside>
     </div>
   );
 
@@ -187,29 +254,60 @@ export default function ClientDetailPage({ params }: { params: Promise<{ id: str
         <LocaleControls locale={locale} onChange={setLocale} />
       </div>
       <DemoBanner locale={locale} />
-      <p>
-        <Link href="/clients">← {t(locale, "client.back")}</Link>
-      </p>
       {state.kind === "not-found" ? (
-        <EmptyState title={t(locale, "client.notFound")} hint={t(locale, "clients.noResults")} />
+        <>
+          <PageHeader title={t(locale, "client.notFound")} back={{ href: "/clients", label: t(locale, "client.back") }} />
+          <EmptyState title={t(locale, "client.notFound")} hint={t(locale, "clients.noResults")} icon="clients" />
+        </>
       ) : state.kind === "denied" ? (
-        <div className="tp-actions">
-          <EmptyState title={t(locale, "dashboard.signinRequired")} hint={t(locale, "dashboard.signinRequiredHint")} />
-          <Link href="/login" className="tp-primary">
-            {t(locale, "dashboard.signin")}
-          </Link>
-        </div>
+        <>
+          <PageHeader title={t(locale, "clients.title")} back={{ href: "/clients", label: t(locale, "client.back") }} />
+          <EmptyState
+            title={t(locale, "dashboard.signinRequired")}
+            hint={t(locale, "dashboard.signinRequiredHint")}
+            icon="shield"
+            action={
+              <Link href="/login" className="tp-primary">
+                {t(locale, "dashboard.signin")}
+              </Link>
+            }
+          />
+        </>
       ) : state.kind === "unreachable" ? (
-        <div className="tp-actions">
+        <>
+          <PageHeader title={t(locale, "clients.title")} back={{ href: "/clients", label: t(locale, "client.back") }} />
           <Alert message={t(locale, "client.loadError")} />
-        </div>
+        </>
       ) : state.kind === "ready" ? (
         <>
-          <h1>{client?.name}</h1>
-          <p className="tp-muted">
-            {t(locale, "clients.sector")}: {client?.sector ?? "—"} · {t(locale, "clients.status")}:{" "}
-            {client?.status === "active" ? t(locale, "clients.active") : t(locale, "clients.archived")}
-          </p>
+          <PageHeader
+            back={{ href: "/clients", label: t(locale, "client.back") }}
+            title={client?.name ?? t(locale, "clients.title")}
+            description={`${t(locale, "clients.sector")}: ${client?.sector ?? "—"} · ${
+              active ? t(locale, "clients.active") : t(locale, "clients.archived")
+            }`}
+            actions={
+              <Link href={`/reviews/new?client=${encodeURIComponent(id)}`} className="tp-primary">
+                <Icon name="plus" size={16} />
+                {t(locale, "dashboard.newReview")}
+              </Link>
+            }
+          />
+          <section className="tp-client-hero">
+            <span className="tp-avatar tp-avatar-lg" aria-hidden="true">
+              {initials(client?.name ?? "")}
+            </span>
+            <div>
+              <p className="tp-client-name">{client?.name}</p>
+              <p className="tp-muted">
+                {client?.sector ?? "—"} · {rows.length} {t(locale, "client.engagements")}
+              </p>
+            </div>
+            <StatusPill
+              label={active ? t(locale, "clients.active") : t(locale, "clients.archived")}
+              tone={active ? "success" : "neutral"}
+            />
+          </section>
           <Tabs
             tabs={[
               { id: "profile", label: t(locale, "client.profile"), content: profileTab },
@@ -220,10 +318,10 @@ export default function ClientDetailPage({ params }: { params: Promise<{ id: str
                 content: demo ? (
                   <PreviewOnly locale={locale} />
                 ) : (
-                  <div className="tp-card">
+                  <section className="tp-panel">
                     <h2>{t(locale, "client.documents")}</h2>
                     <p className="tp-muted">{t(locale, "client.documentsHint")}</p>
-                  </div>
+                  </section>
                 )
               },
               {
@@ -232,10 +330,10 @@ export default function ClientDetailPage({ params }: { params: Promise<{ id: str
                 content: demo ? (
                   <PreviewOnly locale={locale} />
                 ) : (
-                  <div className="tp-card">
+                  <section className="tp-panel">
                     <h2>{t(locale, "client.findings")}</h2>
                     <p className="tp-muted">{t(locale, "client.findingsHint")}</p>
-                  </div>
+                  </section>
                 )
               },
               {
@@ -244,16 +342,18 @@ export default function ClientDetailPage({ params }: { params: Promise<{ id: str
                 content: demo ? (
                   <PreviewOnly locale={locale} />
                 ) : (
-                  <div className="tp-card">
+                  <section className="tp-panel">
                     <h2>{t(locale, "client.reports")}</h2>
                     <p className="tp-muted">{t(locale, "client.reportsHint")}</p>
-                  </div>
+                  </section>
                 )
               }
             ]}
           />
         </>
-      ) : null}
+      ) : (
+        <PageHeader title={t(locale, "clients.title")} back={{ href: "/clients", label: t(locale, "client.back") }} />
+      )}
     </main>
   );
 }

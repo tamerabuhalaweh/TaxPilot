@@ -86,6 +86,8 @@ def _client_ip(request: Request) -> str:
 @router.post("/auth/register", response_model=RegisterOut, status_code=201)
 def register(body: RegisterIn, request: Request, response: Response) -> RegisterOut:
     settings = settings_singleton()
+    if not settings.allow_public_registration:
+        raise AppError("FEATURE_DISABLED", "Registration is disabled on this demo.")
     try:
         email = normalize_email(body.email)
         validate_password(body.password, settings.password_min_length)

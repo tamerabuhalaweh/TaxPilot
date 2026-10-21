@@ -21,6 +21,7 @@ class ErrorEnvelope(BaseModel):
 _STATUS_BY_CODE = {
     "UNAUTHENTICATED": 401,
     "FORBIDDEN": 403,
+    "FEATURE_DISABLED": 403,
     "OWNER_PROTECTED": 403,
     "NOT_FOUND": 404,
     "STATE_CONFLICT": 409,

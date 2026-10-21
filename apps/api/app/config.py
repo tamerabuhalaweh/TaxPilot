@@ -1,8 +1,9 @@
 """Centralized configuration. Secrets come from the environment; production refuses dev defaults."""
 
+import re
 from typing import Literal
 
-from pydantic import AliasChoices, Field, model_validator
+from pydantic import AliasChoices, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _DEV_DATABASE_URL = "postgresql+psycopg://taxpilot:taxpilot@localhost:5432/taxpilot"
@@ -11,8 +12,34 @@ _DEV_REDIS_URL = "redis://localhost:6379/0"
 Environment = Literal["development", "staging", "test", "production"]
 
 
+_EDGE_SECRET_RE = re.compile(r"^[A-Za-z0-9_-]{64,128}$")
+_EDGE_SECRET_MIN_UNIQUE = 24
+
+
+def edge_secret_problem(secret: str | None) -> str | None:
+    """Shape check only. Real entropy comes from out-of-band generation.
+
+    Operators must generate this with `secrets.token_urlsafe(48)` (64 chars),
+    store it in the provider secret manager, and never log or commit it.
+    Length and character checks reject obvious mistakes, not a determined
+    human-chosen string.
+    """
+    if not secret:
+        return "API_EDGE_SECRET is required for a hosted synthetic demo"
+    if not _EDGE_SECRET_RE.fullmatch(secret):
+        return "API_EDGE_SECRET must be 64-128 URL-safe characters from secrets.token_urlsafe(48)"
+    if len(set(secret)) < _EDGE_SECRET_MIN_UNIQUE:
+        return "API_EDGE_SECRET is too repetitive; generate a random value"
+    return None
+
+
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore", populate_by_name=True)
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        extra="ignore",
+        populate_by_name=True,
+        hide_input_in_errors=True,
+    )
 
     app_name: str = "taxpilot-api"
     environment: Environment = "development"
@@ -40,6 +67,14 @@ class Settings(BaseSettings):
     invite_ttl_hours: int = 72
     login_max_attempts: int = 5
     login_window_seconds: int = 900
+    # Hosted demos run with registration closed: the seeded account is the only
+    # way in. Default stays open for local development and test fixtures.
+    allow_public_registration: bool = True
+    # Optional shared secret required from the trusted web BFF. When set, every
+    # route except health requires the matching header, so the API cannot be used
+    # directly even if its public URL is discovered. Hosted synthetic staging
+    # requires this; SecretStr keeps accidental repr/log output masked.
+    api_edge_secret: SecretStr | None = None
     # Dev-only convenience (verification/invite token echo). None resolves to True
     # ONLY in explicitly local development; staging/production always refuse.
     auth_expose_tokens: bool | None = None
@@ -81,8 +116,27 @@ class Settings(BaseSettings):
             # Never expose the synthetic demo boundary in production, regardless
             # of how the environment tries to set it.
             self.demo_recon_enabled = False
+
+        # Narrow fail-closed invariant for the hosted synthetic demo. Local
+        # development/test keeps its permissive defaults; any non-local demo
+        # must be staging-shaped and safe at startup, not on operator memory.
+        secret = self.api_edge_secret_value
+        if self.demo_recon_enabled and self.environment not in ("development", "test"):
+            problems: list[str] = []
+            if self.allow_public_registration:
+                problems.append("ALLOW_PUBLIC_REGISTRATION must be false")
+            if self.auth_expose_tokens:
+                problems.append("AUTH_EXPOSE_TOKENS must be unset/false")
+            secret_problem = edge_secret_problem(secret)
+            if secret_problem:
+                problems.append(secret_problem)
+            if problems:
+                raise ValueError("hosted synthetic demo requires: " + "; ".join(problems))
+
         if self.environment in ("staging", "production") and self.auth_expose_tokens:
             raise ValueError(f"{self.environment} refuses auth_expose_tokens")
+        if self.api_edge_secret is not None and len(secret or "") < 32:
+            raise ValueError("api_edge_secret must be at least 32 characters when set")
         if self.queue_backend not in ("redis", "memory"):
             raise ValueError("queue_backend must be 'redis' or 'memory'")
         if self.storage_backend not in ("local",):
@@ -90,6 +144,10 @@ class Settings(BaseSettings):
         if self.upload_max_bytes < 1024:
             raise ValueError("upload_max_bytes is unreasonably small")
         return self
+
+    @property
+    def api_edge_secret_value(self) -> str | None:
+        return self.api_edge_secret.get_secret_value() if self.api_edge_secret is not None else None
 
     @property
     def cookie_secure(self) -> bool:

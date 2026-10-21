@@ -27,6 +27,11 @@ export function filterHeaders(input: Iterable<[string, string]>): Record<string,
   return out;
 }
 
+/** Hosted demos: the BFF, not the browser, proves it is the caller. */
+export function edgeHeaders(secret: string | undefined): Record<string, string> {
+  return secret ? { "x-taxpilot-edge": secret } : {};
+}
+
 export function bodyTooLarge(contentLength: string | null): boolean {
   if (contentLength === null) return false;
   const n = Number(contentLength);

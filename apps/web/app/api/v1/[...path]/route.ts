@@ -3,6 +3,7 @@ import {
   PROXY_MAX_BODY_BYTES,
   PROXY_MAX_RESPONSE_BYTES,
   bodyTooLarge,
+  edgeHeaders,
   filterHeaders,
   readBoundedBody
 } from "../../../../lib/proxy";
@@ -39,7 +40,9 @@ async function forward(req: NextRequest, segments: string[], method: string): Pr
     );
   }
   const url = `${backendBase()}/api/v1/${segments.join("/")}${req.nextUrl.search}`;
-  const headers = filterHeaders(req.headers.entries());
+  // Server-only trust marker for the hosted API. Never accept or forward this
+  // from the browser; the BFF owns it (filterHeaders drops any client copy).
+  const headers = { ...filterHeaders(req.headers.entries()), ...edgeHeaders(process.env.API_EDGE_SECRET) };
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
   try {

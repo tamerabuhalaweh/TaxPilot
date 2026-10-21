@@ -57,7 +57,7 @@ def create_app() -> FastAPI:
     )
     # Added last so it runs before body buffering and route work. Health stays
     # public for the hosting platform; everything else needs the BFF's header.
-    app.add_middleware(EdgeTokenMiddleware, secret=settings.api_edge_secret)
+    app.add_middleware(EdgeTokenMiddleware, secret=settings.api_edge_secret_value)
     app.add_exception_handler(AppError, app_error_handler)
     app.add_exception_handler(Exception, unhandled_handler)
 

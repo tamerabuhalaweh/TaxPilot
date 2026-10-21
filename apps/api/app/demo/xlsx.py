@@ -21,7 +21,12 @@ from openpyxl.styles import Alignment, Font, PatternFill  # type: ignore[import-
 from openpyxl.utils import get_column_letter  # type: ignore[import-untyped]
 
 from app.demo.fixtures import SYNTHETIC_LABEL, DemoFixture
-from app.demo.summary import Conclusion, build_conclusion, ordered_findings
+from app.demo.summary import (
+    Conclusion,
+    build_conclusion,
+    coverage_scope_text,
+    ordered_findings,
+)
 from app.recon.gl import GLComparisonReport, GLFindingsReport
 
 _BOLD = Font(bold=True)
@@ -61,11 +66,20 @@ def _label_row(ws, columns: int) -> None:
 def _currency_text(conclusion: Conclusion) -> str:
     parts: list[str] = []
     for result in conclusion.currency_results:
-        if result.outcome == "DIFFERENCE":
+        if result.outcome == "RECONCILED":
+            parts.append(
+                f"{result.currency}: reconciled within tolerance (sales {result.sales_total}, "
+                f"GL {result.gl_total}, difference {result.delta})"
+            )
+        elif result.outcome == "DIFFERENCE":
             parts.append(
                 f"{result.currency}: sales {result.sales_total}, GL {result.gl_total}, "
                 f"difference {result.delta}"
             )
+        elif result.outcome == "MISSING_GL":
+            parts.append(f"{result.currency}: sales activity with no in-scope GL posting")
+        elif result.outcome == "MISSING_SALES":
+            parts.append(f"{result.currency}: GL activity with no sales counterpart")
         else:
             parts.append(f"{result.currency}: coverage incomplete (no conclusion stated)")
     return "; ".join(parts) or "none"
@@ -106,6 +120,7 @@ def _summary_sheet(
         ("Review conclusion", conclusion.headline),
         ("Conclusion detail", conclusion.detail),
         ("Coverage complete", str(conclusion.coverage_complete)),
+        ("Coverage scope", coverage_scope_text(conclusion)),
         ("Coverage currencies", ", ".join(conclusion.coverage_currencies) or "none"),
         ("Coverage explanations", "; ".join(conclusion.coverage_explanations) or "none"),
         ("Currency results", _currency_text(conclusion)),

@@ -6,23 +6,45 @@ second calculation. This module derives presentation-only facts from the
 already-computed findings:
 
 - an overall status that never asserts more than the engine proved;
-- per-currency totals only when the engine produced a DIFFERENCE outcome;
-- the affected currencies and reasons when coverage was incomplete.
+- the currency-level outcomes the engine actually emitted, with exact totals
+  only where the engine supplied them;
+- the affected currencies and reasons when coverage was incomplete, including
+  whole-run uncertainty whose currency could not be established.
 
 Nothing here changes a verdict, an amount, or a fingerprint. Equal totals are
-explicitly not treated as proof of completeness.
+explicitly not treated as proof of completeness, and coverage completeness comes
+from the authoritative report rather than from its currency presentation.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Final, Literal
 
 from app.recon.gl import GLComparisonReport, GLFinding, GLFindingsReport
-from app.recon.gl.contracts import DIFFERENCE, INCONCLUSIVE_COVERAGE
+from app.recon.gl.contracts import (
+    COVERAGE_CURRENCY_OUT_OF_SCOPE,
+    COVERAGE_MISSING_CURRENCY,
+    DIFFERENCE,
+    INCONCLUSIVE_COVERAGE,
+    MISSING_GL,
+    MISSING_SALES,
+    RECONCILED,
+)
 
 STATUS_BLOCKED = "BLOCKED"
 STATUS_REVIEW_REQUIRED = "REVIEW_REQUIRED"
 STATUS_NO_REVIEW_ITEMS = "NO_REVIEW_ITEMS"
+
+CoverageScope = Literal["COMPLETE", "CURRENCIES", "WHOLE_RUN", "BLOCKED"]
+
+COVERAGE_SCOPE_COMPLETE: Final[CoverageScope] = "COMPLETE"
+COVERAGE_SCOPE_CURRENCIES: Final[CoverageScope] = "CURRENCIES"
+COVERAGE_SCOPE_WHOLE_RUN: Final[CoverageScope] = "WHOLE_RUN"
+COVERAGE_SCOPE_BLOCKED: Final[CoverageScope] = "BLOCKED"
+
+_CURRENCY_OUTCOMES = frozenset({RECONCILED, DIFFERENCE, MISSING_GL, MISSING_SALES, INCONCLUSIVE_COVERAGE})
+_GLOBAL_COVERAGE_REASONS = frozenset({COVERAGE_MISSING_CURRENCY, COVERAGE_CURRENCY_OUT_OF_SCOPE})
 
 CAUTION = (
     "Equal totals do not prove completeness: rows can be missing, duplicated, "
@@ -46,7 +68,7 @@ _REASON_TEXT = {
 
 @dataclass(frozen=True)
 class CurrencyResult:
-    """One currency that received an explicit (non-informational) outcome."""
+    """One currency-level outcome emitted by the reconciliation engine."""
 
     currency: str
     outcome: str
@@ -65,17 +87,15 @@ class Conclusion:
     coverage_currencies: tuple[str, ...]
     coverage_reasons: tuple[str, ...]
     coverage_explanations: tuple[str, ...]
+    coverage_scope: CoverageScope
 
     @property
     def coverage_complete(self) -> bool:
-        return not self.coverage_currencies
+        return self.coverage_scope == COVERAGE_SCOPE_COMPLETE
 
 
-def _amount(views: tuple[object, ...]) -> str | None:
-    if not views:
-        return None
-    amount = getattr(views[0], "amount", None)
-    return str(amount) if amount is not None else None
+def _decimal_text(value: object | None) -> str | None:
+    return None if value is None else str(value)
 
 
 def _explain(reason: str) -> str:
@@ -106,40 +126,39 @@ def ordered_findings(findings: tuple[GLFinding, ...]) -> tuple[GLFinding, ...]:
 
 def build_conclusion(report: GLComparisonReport, findings: GLFindingsReport) -> Conclusion:
     """Derive the demo's presentation summary from an existing run."""
-    difference = [item for item in findings.findings if item.outcome_kind == DIFFERENCE]
-    coverage = [item for item in findings.findings if item.outcome_kind == INCONCLUSIVE_COVERAGE]
-
-    currency_results: list[CurrencyResult] = []
-    for item in difference:
-        if item.delta_currency is None:
-            continue
-        currency_results.append(
-            CurrencyResult(
-                currency=item.delta_currency,
-                outcome=DIFFERENCE,
-                sales_total=_amount(item.sales),
-                gl_total=_amount(item.gl),
-                delta=item.delta,
-            )
+    currency_results = tuple(
+        CurrencyResult(
+            currency=outcome.currency,
+            outcome=outcome.kind,
+            sales_total=_decimal_text(outcome.sales_total),
+            gl_total=_decimal_text(outcome.gl_total),
+            delta=_decimal_text(outcome.delta),
         )
-    for item in coverage:
-        if item.delta_currency is None:
-            continue
-        currency_results.append(
-            CurrencyResult(
-                currency=item.delta_currency,
-                outcome=INCONCLUSIVE_COVERAGE,
-                sales_total=None,
-                gl_total=None,
-                delta=None,
-            )
-        )
+        for outcome in report.outcomes
+        if outcome.kind in _CURRENCY_OUTCOMES and outcome.currency is not None
+    )
 
     coverage_currencies = tuple(
-        dict.fromkeys(item.currency for item in currency_results if item.outcome == INCONCLUSIVE_COVERAGE)
+        dict.fromkeys(
+            outcome.currency
+            for outcome in report.outcomes
+            if outcome.kind == INCONCLUSIVE_COVERAGE and outcome.currency is not None
+        )
     )
     coverage_reasons = tuple(report.inconclusive_reasons)
     coverage_explanations = tuple(_explain(reason) for reason in coverage_reasons)
+    coverage_scope: CoverageScope
+    if report.blocked:
+        coverage_scope = COVERAGE_SCOPE_BLOCKED
+    elif report.inconclusive and _GLOBAL_COVERAGE_REASONS.intersection(coverage_reasons):
+        coverage_scope = COVERAGE_SCOPE_WHOLE_RUN
+    elif report.inconclusive and coverage_currencies:
+        coverage_scope = COVERAGE_SCOPE_CURRENCIES
+    elif report.inconclusive:
+        coverage_scope = COVERAGE_SCOPE_WHOLE_RUN
+    else:
+        coverage_scope = COVERAGE_SCOPE_COMPLETE
+
     review_required_value = findings.summary.get("review_required", 0)
     review_required = review_required_value if isinstance(review_required_value, int) else 0
 
@@ -153,12 +172,21 @@ def build_conclusion(report: GLComparisonReport, findings: GLFindingsReport) -> 
     elif review_required:
         status = STATUS_REVIEW_REQUIRED
         parts: list[str] = []
-        if currency_results:
-            differing = [item.currency for item in currency_results if item.outcome == DIFFERENCE]
-            if differing:
-                noun = "currency differs" if len(differing) == 1 else "currencies differ"
-                parts.append(f"{len(differing)} {noun} beyond tolerance: {', '.join(differing)}.")
-        if coverage_currencies:
+        differing = [item.currency for item in currency_results if item.outcome == DIFFERENCE]
+        if differing:
+            noun = "currency differs" if len(differing) == 1 else "currencies differ"
+            parts.append(f"{len(differing)} {noun} beyond tolerance: {', '.join(differing)}.")
+        missing_gl = [item.currency for item in currency_results if item.outcome == MISSING_GL]
+        if missing_gl:
+            noun = "currency has" if len(missing_gl) == 1 else "currencies have"
+            joined = ", ".join(missing_gl)
+            parts.append(f"{len(missing_gl)} {noun} sales activity but no in-scope GL posting: {joined}.")
+        missing_sales = [item.currency for item in currency_results if item.outcome == MISSING_SALES]
+        if missing_sales:
+            noun = "currency has" if len(missing_sales) == 1 else "currencies have"
+            joined = ", ".join(missing_sales)
+            parts.append(f"{len(missing_sales)} {noun} GL activity but no sales counterpart: {joined}.")
+        if coverage_scope == COVERAGE_SCOPE_CURRENCIES:
             if len(coverage_currencies) == 1:
                 parts.append(
                     f"Coverage is incomplete for {coverage_currencies[0]}, so no conclusion "
@@ -169,6 +197,11 @@ def build_conclusion(report: GLComparisonReport, findings: GLFindingsReport) -> 
                     f"Coverage is incomplete for {', '.join(coverage_currencies)}, so no "
                     "conclusion is stated for those currencies."
                 )
+        elif coverage_scope == COVERAGE_SCOPE_WHOLE_RUN:
+            parts.append(
+                "Coverage is incomplete for the whole comparison because the affected "
+                "currency could not be established, so no currency conclusion is stated."
+            )
         if not parts:
             parts.append(f"{review_required} review-required items need an accountant's attention.")
         headline = "Review required"
@@ -186,19 +219,36 @@ def build_conclusion(report: GLComparisonReport, findings: GLFindingsReport) -> 
         headline=headline,
         detail=detail,
         caution=CAUTION,
-        currency_results=tuple(currency_results),
+        currency_results=currency_results,
         coverage_currencies=coverage_currencies,
         coverage_reasons=coverage_reasons,
         coverage_explanations=coverage_explanations,
+        coverage_scope=coverage_scope,
     )
+
+
+def coverage_scope_text(conclusion: Conclusion) -> str:
+    """English export wording for the authoritative coverage scope."""
+    if conclusion.coverage_scope == COVERAGE_SCOPE_BLOCKED:
+        return "not established - the run was blocked before comparison"
+    if conclusion.coverage_scope == COVERAGE_SCOPE_WHOLE_RUN:
+        return "incomplete for the whole comparison - affected currency could not be established"
+    if conclusion.coverage_scope == COVERAGE_SCOPE_CURRENCIES:
+        return f"incomplete for {', '.join(conclusion.coverage_currencies)}"
+    return "complete for every in-scope currency"
 
 
 __all__ = [
     "CAUTION",
+    "COVERAGE_SCOPE_BLOCKED",
+    "COVERAGE_SCOPE_COMPLETE",
+    "COVERAGE_SCOPE_CURRENCIES",
+    "COVERAGE_SCOPE_WHOLE_RUN",
     "STATUS_BLOCKED",
     "STATUS_NO_REVIEW_ITEMS",
     "STATUS_REVIEW_REQUIRED",
     "Conclusion",
     "CurrencyResult",
     "build_conclusion",
+    "coverage_scope_text",
 ]

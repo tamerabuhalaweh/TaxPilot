@@ -69,7 +69,13 @@ class DemoFinding(BaseModel):
 
 class DemoCurrencyResult(BaseModel):
     currency: str
-    outcome: Literal["DIFFERENCE", "INCONCLUSIVE_COVERAGE"]
+    outcome: Literal[
+        "RECONCILED",
+        "DIFFERENCE",
+        "MISSING_GL",
+        "MISSING_SALES",
+        "INCONCLUSIVE_COVERAGE",
+    ]
     sales_total: str | None = None
     gl_total: str | None = None
     delta: str | None = None
@@ -77,6 +83,7 @@ class DemoCurrencyResult(BaseModel):
 
 class DemoCoverage(BaseModel):
     complete: bool
+    scope: Literal["COMPLETE", "CURRENCIES", "WHOLE_RUN", "BLOCKED"]
     currencies: list[str]
     reasons: list[str]
     explanations: list[str]

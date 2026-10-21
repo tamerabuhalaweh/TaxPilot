@@ -27,7 +27,7 @@ from fastapi import APIRouter, Depends, Query, Request, Response
 from ..demo import fixtures as demo_fixtures
 from ..demo.pdf import Line, build_pdf
 from ..demo.service import run_fixture, to_response
-from ..demo.summary import build_conclusion, ordered_findings
+from ..demo.summary import build_conclusion, coverage_scope_text, ordered_findings
 from ..demo.xlsx import build_xlsx
 from ..deps import settings_singleton
 from ..errors import AppError
@@ -184,15 +184,27 @@ def _pdf_lines(
         ),
     ]
     for result in conclusion.currency_results:
-        if result.outcome == "DIFFERENCE":
+        if result.outcome == "RECONCILED":
+            lines.append(
+                Line(
+                    f"{result.currency}: reconciled within tolerance - sales {result.sales_total}, "
+                    f"GL {result.gl_total}, difference {result.delta}"
+                )
+            )
+        elif result.outcome == "DIFFERENCE":
             lines.append(
                 Line(
                     f"{result.currency}: sales {result.sales_total}, GL {result.gl_total}, "
                     f"difference {result.delta} (tolerance {report.tolerance})"
                 )
             )
+        elif result.outcome == "MISSING_GL":
+            lines.append(Line(f"{result.currency}: sales activity with no in-scope GL posting"))
+        elif result.outcome == "MISSING_SALES":
+            lines.append(Line(f"{result.currency}: GL activity with no sales counterpart"))
         else:
             lines.append(Line(f"{result.currency}: coverage incomplete - no conclusion stated"))
+    lines.append(Line(f"Coverage: {coverage_scope_text(conclusion)}"))
     if conclusion.coverage_reasons:
         lines.append(
             Line(

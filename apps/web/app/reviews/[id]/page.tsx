@@ -50,6 +50,18 @@ function statusLabel(locale: Locale, status: string): string {
   return t(locale, `review.status.${status.toLowerCase()}`);
 }
 
+const OUTCOME_LABEL_KEYS: Record<string, string> = {
+  RECONCILED: "review.reconciledOutcome",
+  DIFFERENCE: "review.differenceOutcome",
+  MISSING_GL: "review.missingGlOutcome",
+  MISSING_SALES: "review.missingSalesOutcome",
+  INCONCLUSIVE_COVERAGE: "review.inconclusiveOutcome"
+};
+
+function outcomeLabel(locale: Locale, outcome: string): string {
+  return t(locale, OUTCOME_LABEL_KEYS[outcome] ?? "review.inconclusiveOutcome");
+}
+
 function typeLabel(locale: Locale, reviewType: string): string {
   return reviewType === "JOFO" ? t(locale, "review.typeJofotara") : t(locale, "review.typeSalesGl");
 }
@@ -83,10 +95,12 @@ function conclusionDetail(run: DemoRunPayload, locale: Locale): string {
         .replace("{count}", String(differing.length))
     );
   }
-  const incomplete = conclusion.coverage.currencies;
-  if (incomplete.length > 0) {
-    const key = incomplete.length === 1 ? "review.coverageIncompleteOne" : "review.coverageIncompleteMany";
-    parts.push(t(locale, key).replace("{currencies}", incomplete.join(", ")));
+  const incomplete = conclusion.coverage;
+  if (incomplete.scope === "CURRENCIES") {
+    const key = incomplete.currencies.length === 1 ? "review.coverageIncompleteOne" : "review.coverageIncompleteMany";
+    parts.push(t(locale, key).replace("{currencies}", incomplete.currencies.join(", ")));
+  } else if (incomplete.scope === "WHOLE_RUN") {
+    parts.push(t(locale, "review.coverageIncompleteWhole"));
   }
   return parts.length > 0 ? parts.join(" ") : t(locale, "review.conclusionReviewRequiredHint");
 }
@@ -383,6 +397,27 @@ export default function ReviewWorkspacePage({ params }: { params: Promise<{ id: 
           ? t(locale, "review.conclusionNoItems")
           : t(locale, "review.conclusionReviewRequired")
       : "";
+    const coverage = conclusion?.coverage;
+    const inconclusiveCount =
+      !coverage || coverage.scope === "COMPLETE"
+        ? "0"
+        : coverage.scope === "CURRENCIES"
+          ? String(coverage.currencies.length)
+          : "—";
+    const coverageMessage = !coverage
+      ? ""
+      : coverage.scope === "COMPLETE"
+        ? t(locale, "review.coverageComplete")
+        : coverage.scope === "BLOCKED"
+          ? t(locale, "review.coverageBlocked")
+          : coverage.scope === "WHOLE_RUN"
+            ? t(locale, "review.coverageIncompleteWhole")
+            : t(
+                locale,
+                coverage.currencies.length === 1
+                  ? "review.coverageIncompleteOne"
+                  : "review.coverageIncompleteMany"
+              ).replace("{currencies}", coverage.currencies.join(", "));
     return (
       <div>
         <div className="tp-field">
@@ -441,7 +476,7 @@ export default function ReviewWorkspacePage({ params }: { params: Promise<{ id: 
                 <div className="tp-stat-label">{t(locale, "review.informational")}</div>
               </div>
               <div className="tp-stat">
-                <div className="tp-stat-value">{run.conclusion.coverage.currencies.length}</div>
+                <div className="tp-stat-value">{inconclusiveCount}</div>
                 <div className="tp-stat-label">{t(locale, "review.inconclusive")}</div>
               </div>
             </div>
@@ -486,9 +521,7 @@ export default function ReviewWorkspacePage({ params }: { params: Promise<{ id: 
                           {run.tolerance ?? "—"}
                         </td>
                         <td data-label={t(locale, "review.outcome")}>
-                          {result.outcome === "DIFFERENCE"
-                            ? t(locale, "review.differenceOutcome")
-                            : t(locale, "review.inconclusiveOutcome")}
+                          {outcomeLabel(locale, result.outcome)}
                         </td>
                       </tr>
                     ))}
@@ -509,31 +542,28 @@ export default function ReviewWorkspacePage({ params }: { params: Promise<{ id: 
 
             <div className="tp-coverage">
               <h4>{t(locale, "review.coverage")}</h4>
-              {run.conclusion.coverage.complete ? (
+              {run.conclusion.coverage.scope === "COMPLETE" ? (
                 <p className="tp-muted">{t(locale, "review.coverageComplete")}</p>
               ) : (
                 <>
-                  <p>
-                    {t(
-                      locale,
-                      run.conclusion.coverage.currencies.length === 1
-                        ? "review.coverageIncompleteOne"
-                        : "review.coverageIncompleteMany"
-                    ).replace("{currencies}", run.conclusion.coverage.currencies.join(", "))}
-                  </p>
-                  <h5>{t(locale, "review.coverageReasons")}</h5>
-                  <ul>
-                    {run.conclusion.coverage.reasons.map((reason, index) => (
-                      <li key={reason}>
-                        {label(
-                          locale,
-                          `review.reason.${reason}`,
-                          run.conclusion.coverage.explanations[index] ?? reason
-                        )}{" "}
-                        <span className="tp-num tp-code">{reason}</span>
-                      </li>
-                    ))}
-                  </ul>
+                  <p>{coverageMessage}</p>
+                  {run.conclusion.coverage.reasons.length > 0 ? (
+                    <>
+                      <h5>{t(locale, "review.coverageReasons")}</h5>
+                      <ul>
+                        {run.conclusion.coverage.reasons.map((reason, index) => (
+                          <li key={reason}>
+                            {label(
+                              locale,
+                              `review.reason.${reason}`,
+                              run.conclusion.coverage.explanations[index] ?? reason
+                            )}{" "}
+                            <span className="tp-num tp-code">{reason}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </>
+                  ) : null}
                 </>
               )}
             </div>

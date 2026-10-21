@@ -106,6 +106,7 @@ def _conclusion(report: GLComparisonReport, findings: GLFindingsReport) -> DemoC
         ],
         coverage=DemoCoverage(
             complete=summary.coverage_complete,
+            scope=summary.coverage_scope,
             currencies=list(summary.coverage_currencies),
             reasons=list(summary.coverage_reasons),
             explanations=list(summary.coverage_explanations),

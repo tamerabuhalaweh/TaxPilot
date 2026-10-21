@@ -5,16 +5,24 @@ running off the PDF page, no page footer, unformatted spreadsheets, and text
 cells that could be interpreted as formulas.
 """
 
+from dataclasses import replace
+from decimal import Decimal
 from io import BytesIO
 
 from openpyxl import Workbook, load_workbook  # type: ignore[import-untyped]
 
 from app.demo.fixtures import SYNTHETIC_LABEL, DemoFixture, get_fixture
 from app.demo.pdf import Line, build_pdf, wrap_lines
-from app.demo.service import run_fixture
+from app.demo.service import run_fixture, to_response
 from app.demo.summary import build_conclusion, ordered_findings
 from app.demo.xlsx import _write, build_xlsx
-from app.recon.gl import GLComparisonReport, GLFindingsReport
+from app.recon.gl import (
+    GLComparisonReport,
+    GLComparisonRequest,
+    GLFindingsReport,
+    compare_sales_to_gl,
+    project_gl,
+)
 from app.routers.demo_recon import _pdf_lines
 
 FIXTURE_ID = "synthetic-sales-gl-v1"
@@ -126,3 +134,155 @@ def test_summary_orders_review_items_before_information() -> None:
     assert conclusion.coverage_reasons == ("COVERAGE_DUPLICATE",)
     assert [item.currency for item in conclusion.currency_results] == ["JOD", "USD"]
     assert conclusion.caution.startswith("Equal totals do not prove completeness")
+
+
+def _run_v2() -> tuple[DemoFixture, GLComparisonReport, GLFindingsReport]:
+    fixture = get_fixture("synthetic-sales-gl-v2")
+    assert fixture is not None
+    report, findings = run_fixture(fixture, tenant_id="t1", client_id="c1")
+    return fixture, report, findings
+
+
+def test_whole_run_uncertainty_is_never_complete_and_never_invents_a_currency() -> None:
+    fixture, _, _ = _run_v2()
+    altered = replace(
+        fixture,
+        sales=(replace(fixture.sales[0], currency=None),),
+        gl=(),
+    )
+    report, findings = run_fixture(altered, tenant_id="t1", client_id="c1")
+    conclusion = build_conclusion(report, findings)
+
+    assert report.inconclusive is True
+    assert report.inconclusive_reasons == ("COVERAGE_MISSING_CURRENCY",)
+    assert conclusion.coverage_complete is False
+    assert conclusion.coverage_scope == "WHOLE_RUN"
+    assert conclusion.coverage_currencies == ()
+    assert conclusion.coverage_reasons == ("COVERAGE_MISSING_CURRENCY",)
+    assert conclusion.currency_results == ()
+    assert "whole comparison" in conclusion.detail
+
+    response = to_response(altered, report, findings)
+    assert response.conclusion.coverage.complete is False
+    assert response.conclusion.coverage.scope == "WHOLE_RUN"
+    assert response.conclusion.coverage.currencies == []
+    assert response.conclusion.coverage.reasons == ["COVERAGE_MISSING_CURRENCY"]
+
+    known_currency = replace(fixture, sales=(replace(fixture.sales[0], currency=None),))
+    known_report, known_findings = run_fixture(known_currency, tenant_id="t1", client_id="c1")
+    known_conclusion = build_conclusion(known_report, known_findings)
+    assert known_report.inconclusive is True
+    assert known_conclusion.coverage_complete is False
+    assert known_conclusion.coverage_scope == "WHOLE_RUN"
+    assert known_conclusion.coverage_currencies == ("JOD",)
+    assert "whole comparison" in known_conclusion.detail
+
+
+def test_exports_show_whole_run_uncertainty_as_incomplete_coverage() -> None:
+    fixture, _, _ = _run_v2()
+    altered = replace(
+        fixture,
+        sales=(replace(fixture.sales[0], currency=None),),
+        gl=(),
+    )
+    report, findings = run_fixture(altered, tenant_id="t1", client_id="c1")
+    engagement = {"period_start": "2026-02-01", "period_end": "2026-06-30"}
+    pdf = build_pdf(_pdf_lines(altered, report, findings, engagement), footer=FOOTER).decode("latin-1")
+    assert "Coverage: incomplete for the whole comparison" in pdf
+
+    workbook = load_workbook(BytesIO(build_xlsx(altered, report, findings)))
+    summary = workbook["Summary"]
+    rows = {
+        summary.cell(row=row, column=1).value: summary.cell(row=row, column=2).value
+        for row in range(3, summary.max_row + 1)
+    }
+    assert rows["Coverage complete"] == "False"
+    assert "whole comparison" in rows["Coverage scope"]
+
+
+def test_blocked_run_never_reports_complete_coverage() -> None:
+    fixture, _, _ = _run_v2()
+    request = GLComparisonRequest(
+        tenant_id="t1",
+        client_id="c1",
+        sales_dataset_id=fixture.sales_dataset_id,
+        gl_dataset_id=fixture.gl_dataset_id,
+        jurisdiction=fixture.jurisdiction,
+        rules_version=fixture.rules_version,
+        policy=None,
+        period_start=fixture.period_start,
+        period_end=fixture.period_end,
+    )
+    report = compare_sales_to_gl(fixture.sales, fixture.gl, request)
+    findings = project_gl(report)
+    conclusion = build_conclusion(report, findings)
+
+    assert report.blocked is True
+    assert conclusion.coverage_complete is False
+    assert conclusion.coverage_scope == "BLOCKED"
+    assert conclusion.coverage_currencies == ()
+    assert conclusion.status == "BLOCKED"
+
+    response = to_response(fixture, report, findings)
+    assert response.conclusion.coverage.complete is False
+    assert response.conclusion.coverage.scope == "BLOCKED"
+
+    pdf = build_pdf(
+        _pdf_lines(fixture, report, findings, {"period_start": "2026-02-01", "period_end": "2026-06-30"}),
+        footer=FOOTER,
+    ).decode("latin-1")
+    assert "Coverage: not established" in pdf
+    workbook = load_workbook(BytesIO(build_xlsx(fixture, report, findings)))
+    summary = workbook["Summary"]
+    rows = {
+        summary.cell(row=row, column=1).value: summary.cell(row=row, column=2).value
+        for row in range(3, summary.max_row + 1)
+    }
+    assert rows["Coverage complete"] == "False"
+    assert rows["Coverage scope"].startswith("not established")
+
+
+def test_genuinely_complete_run_reports_complete_coverage() -> None:
+    _, report, findings = _run_v2()
+    conclusion = build_conclusion(report, findings)
+
+    assert report.blocked is False
+    assert report.inconclusive is False
+    assert conclusion.coverage_complete is True
+    assert conclusion.coverage_scope == "COMPLETE"
+    assert [(item.currency, item.outcome) for item in conclusion.currency_results] == [("JOD", "DIFFERENCE")]
+
+
+def test_currency_results_include_reconciled_and_missing_side_outcomes() -> None:
+    fixture, _, _ = _run_v2()
+
+    reconciled = replace(
+        fixture,
+        gl=(replace(fixture.gl[0], credit=Decimal("1500.000")),),
+    )
+    reconciled_report, reconciled_findings = run_fixture(reconciled, tenant_id="t1", client_id="c1")
+    reconciled_conclusion = build_conclusion(reconciled_report, reconciled_findings)
+    assert [
+        (item.currency, item.outcome, item.sales_total, item.gl_total, item.delta)
+        for item in reconciled_conclusion.currency_results
+    ] == [("JOD", "RECONCILED", "1500.000", "1500.000", "0.000")]
+    reconciled_response = to_response(reconciled, reconciled_report, reconciled_findings)
+    assert reconciled_response.conclusion.currency_results[0].outcome == "RECONCILED"
+
+    missing_gl = replace(fixture, gl=())
+    missing_gl_report, missing_gl_findings = run_fixture(missing_gl, tenant_id="t1", client_id="c1")
+    missing_gl_conclusion = build_conclusion(missing_gl_report, missing_gl_findings)
+    assert [(item.currency, item.outcome) for item in missing_gl_conclusion.currency_results] == [
+        ("JOD", "MISSING_GL")
+    ]
+    assert missing_gl_conclusion.currency_results[0].sales_total is None
+    missing_gl_response = to_response(missing_gl, missing_gl_report, missing_gl_findings)
+    assert missing_gl_response.conclusion.currency_results[0].outcome == "MISSING_GL"
+
+    missing_sales = replace(fixture, sales=())
+    missing_sales_report, missing_sales_findings = run_fixture(missing_sales, tenant_id="t1", client_id="c1")
+    missing_sales_conclusion = build_conclusion(missing_sales_report, missing_sales_findings)
+    assert [(item.currency, item.outcome) for item in missing_sales_conclusion.currency_results] == [
+        ("JOD", "MISSING_SALES")
+    ]
+    assert missing_sales_conclusion.currency_results[0].gl_total is None

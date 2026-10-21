@@ -229,7 +229,7 @@ export interface DemoFinding {
 
 export interface DemoCurrencyResult {
   currency: string;
-  outcome: "DIFFERENCE" | "INCONCLUSIVE_COVERAGE";
+  outcome: "RECONCILED" | "DIFFERENCE" | "MISSING_GL" | "MISSING_SALES" | "INCONCLUSIVE_COVERAGE";
   sales_total: string | null;
   gl_total: string | null;
   delta: string | null;
@@ -237,6 +237,7 @@ export interface DemoCurrencyResult {
 
 export interface DemoCoverage {
   complete: boolean;
+  scope: "COMPLETE" | "CURRENCIES" | "WHOLE_RUN" | "BLOCKED";
   currencies: string[];
   reasons: string[];
   explanations: string[];

@@ -38,3 +38,36 @@ def test_dev_token_exposure_forced_off_in_production():
             cors_allowed_origins=["https://app.example.com"],
             auth_expose_tokens=True,
         )
+
+
+def test_public_registration_flag_parses():
+    assert Settings().allow_public_registration is True
+    assert Settings(allow_public_registration=False).allow_public_registration is False
+
+
+def test_edge_secret_requires_enough_entropy():
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        Settings(api_edge_secret="too-short")
+    assert Settings(api_edge_secret="x" * 32).api_edge_secret == "x" * 32
+
+
+def test_registration_guard_returns_403_without_opening_store(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from app.deps import settings_singleton
+    from app.main import create_app
+
+    monkeypatch.setattr(
+        "app.routers.auth.settings_singleton",
+        lambda: Settings(allow_public_registration=False),
+    )
+    client = TestClient(create_app(), raise_server_exceptions=False)
+    r = client.post(
+        "/api/v1/auth/register",
+        json={"email": "new@example.com", "password": "long enough passphrase", "firm_name": "Firm"},
+    )
+    assert r.status_code == 403
+    assert r.json()["error"]["code"] == "FEATURE_DISABLED"
+    settings_singleton.cache_clear()

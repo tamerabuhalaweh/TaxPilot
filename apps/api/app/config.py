@@ -40,6 +40,13 @@ class Settings(BaseSettings):
     invite_ttl_hours: int = 72
     login_max_attempts: int = 5
     login_window_seconds: int = 900
+    # Hosted demos run with registration closed: the seeded account is the only
+    # way in. Default stays open for local development and test fixtures.
+    allow_public_registration: bool = True
+    # Optional shared secret required from the trusted web BFF. When set, every
+    # route except health requires the matching header, so the API cannot be used
+    # directly even if its public URL is discovered.
+    api_edge_secret: str | None = None
     # Dev-only convenience (verification/invite token echo). None resolves to True
     # ONLY in explicitly local development; staging/production always refuse.
     auth_expose_tokens: bool | None = None
@@ -83,6 +90,8 @@ class Settings(BaseSettings):
             self.demo_recon_enabled = False
         if self.environment in ("staging", "production") and self.auth_expose_tokens:
             raise ValueError(f"{self.environment} refuses auth_expose_tokens")
+        if self.api_edge_secret is not None and len(self.api_edge_secret) < 32:
+            raise ValueError("api_edge_secret must be at least 32 characters when set")
         if self.queue_backend not in ("redis", "memory"):
             raise ValueError("queue_backend must be 'redis' or 'memory'")
         if self.storage_backend not in ("local",):

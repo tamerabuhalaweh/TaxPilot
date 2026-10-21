@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { PROXY_MAX_BODY_BYTES, bodyTooLarge, filterHeaders, readBoundedBody } from "./proxy";
+import { PROXY_MAX_BODY_BYTES, bodyTooLarge, edgeHeaders, filterHeaders, readBoundedBody } from "./proxy";
 
 describe("proxy policy", () => {
   it("forwards only allowlisted headers", () => {
@@ -19,6 +19,12 @@ describe("proxy policy", () => {
       "x-request-id": "1",
       "x-csrf-token": "t"
     });
+  });
+
+  it("adds the edge secret only from server config and never from the client", () => {
+    expect(filterHeaders([["x-taxpilot-edge", "forged"]])).toEqual({});
+    expect(edgeHeaders(undefined)).toEqual({});
+    expect(edgeHeaders("server-secret")).toEqual({ "x-taxpilot-edge": "server-secret" });
   });
 
   it("rejects oversized bodies by content-length", () => {

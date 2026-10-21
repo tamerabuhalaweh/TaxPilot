@@ -5,10 +5,12 @@ so oversized or hostile values can never flow into logs, headers, or error envel
 """
 
 import re
+import secrets
 import uuid
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
+from starlette.responses import JSONResponse
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
@@ -28,6 +30,32 @@ class CorrelationIdMiddleware(BaseHTTPMiddleware):
         response = await call_next(request)
         response.headers[self.header] = correlation_id
         return response
+
+
+class EdgeTokenMiddleware(BaseHTTPMiddleware):
+    """Reject direct public API traffic unless it came through the trusted BFF.
+
+    The web tier adds this header server-side from its own environment. Browser
+    clients never receive the secret; health stays public for the host probe.
+    """
+
+    header = "X-TaxPilot-Edge"
+    public_paths = {"/health", "/api/v1/health"}
+
+    def __init__(self, app, secret: str | None):  # type: ignore[no-untyped-def]
+        super().__init__(app)
+        self.secret = secret
+
+    async def dispatch(self, request: Request, call_next):  # type: ignore[no-untyped-def]
+        if not self.secret or request.url.path in self.public_paths:
+            return await call_next(request)
+        provided = request.headers.get(self.header, "")
+        if not secrets.compare_digest(provided, self.secret):
+            return JSONResponse(
+                status_code=403,
+                content={"error": {"code": "FORBIDDEN", "message": "Forbidden."}},
+            )
+        return await call_next(request)
 
 
 class BodyLimitMiddleware(BaseHTTPMiddleware):

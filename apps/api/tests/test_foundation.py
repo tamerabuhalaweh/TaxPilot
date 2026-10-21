@@ -368,3 +368,18 @@ def test_heartbeat_prevents_recovery_of_live_worker():
     finally:
         stop.set()
         beat.join(timeout=5.0)
+
+
+def test_edge_token_gate_when_configured(monkeypatch):  # type: ignore[no-untyped-def]
+    from app.deps import settings_singleton
+
+    monkeypatch.setenv("API_EDGE_SECRET", "x" * 32)
+    settings_singleton.cache_clear()
+    try:
+        client = TestClient(create_app(), raise_server_exceptions=False)
+        with client:
+            assert client.get("/api/v1/health").status_code == 200
+            assert client.get("/openapi.json").status_code == 403
+            assert client.get("/openapi.json", headers={"X-TaxPilot-Edge": "x" * 32}).status_code == 200
+    finally:
+        settings_singleton.cache_clear()

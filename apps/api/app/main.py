@@ -13,7 +13,7 @@ from .db import create_db_engine
 from .deps import settings_singleton
 from .errors import AppError, app_error_handler, unhandled_handler
 from .logging_setup import setup_logging
-from .middleware import BodyLimitMiddleware, CorrelationIdMiddleware
+from .middleware import BodyLimitMiddleware, CorrelationIdMiddleware, EdgeTokenMiddleware
 from .routers.auth import router as auth_router
 from .routers.datasets import router as datasets_router
 from .routers.engagements import router as engagements_router
@@ -55,6 +55,9 @@ def create_app() -> FastAPI:
         allow_headers=["Content-Type", "Authorization", "X-Request-ID", "X-CSRF-Token", "Idempotency-Key"],
         max_age=600,
     )
+    # Added last so it runs before body buffering and route work. Health stays
+    # public for the hosting platform; everything else needs the BFF's header.
+    app.add_middleware(EdgeTokenMiddleware, secret=settings.api_edge_secret)
     app.add_exception_handler(AppError, app_error_handler)
     app.add_exception_handler(Exception, unhandled_handler)
 

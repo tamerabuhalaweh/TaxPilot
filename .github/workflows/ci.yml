@@ -222,7 +222,7 @@ jobs:
           echo $! > /tmp/tp-web.pid
           sleep 12
           curl -fsS http://127.0.0.1:3000/api/v1/health
-          npx playwright test e2e/auth.spec.ts e2e/reviews.spec.ts e2e/proxy.spec.ts e2e/rec-ui01.spec.ts
+          npx playwright test e2e/auth.spec.ts e2e/reviews.spec.ts e2e/proxy.spec.ts e2e/rec-ui01.spec.ts e2e/rec-ui02.spec.ts
           kill "$(cat /tmp/tp-api.pid)" "$(cat /tmp/tp-web.pid)"
 
   browser-demo:

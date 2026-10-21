@@ -20,6 +20,7 @@ test("demo clients search and detail work without a backend", async ({ page }) =
   await page.getByLabel("Search clients").fill("");
   await page.getByRole("link", { name: "Open" }).first().click();
   await expect(page.getByRole("tab", { name: "Findings" })).toBeVisible();
+  await page.getByRole("tab", { name: "Findings" }).click();
   await expect(page.getByText("Coming soon").first()).toBeVisible();
 });
 

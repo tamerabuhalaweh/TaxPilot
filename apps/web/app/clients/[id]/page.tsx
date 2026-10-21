@@ -9,37 +9,57 @@ import { LocaleControls } from "../../../components/LocaleControls";
 import { Nav } from "../../../components/Nav";
 import { Tabs } from "../../../components/Tabs";
 import { EmptyState } from "../../../components/EmptyState";
-import { ApiRequestError, type ClientPayload } from "../../../lib/api";
-import { DEMO_CLIENTS } from "../../../lib/demo-data";
+import {
+  ApiRequestError,
+  getClient,
+  listEngagements,
+  type ClientPayload,
+  type EngagementPayload
+} from "../../../lib/api";
+import { DEMO_CLIENTS, DEMO_REVIEWS } from "../../../lib/demo-data";
 import { t } from "../../../lib/i18n";
 import { isDemoMode } from "../../../lib/preview";
 
-async function fetchClient(id: string, signal?: AbortSignal): Promise<ClientPayload> {
-  const res = await fetch(`/api/v1/clients/${encodeURIComponent(id)}`, { signal });
-  if (!res.ok) {
-    let code = `HTTP_${res.status}`;
-    try {
-      code = ((await res.json()) as { error: { code: string } }).error.code;
-    } catch {
-      /* keep generic */
-    }
-    throw new ApiRequestError(code, "Client load failed.", res.status);
-  }
-  return (await res.json()) as ClientPayload;
+interface ReviewRow {
+  id: string;
+  period: string;
+  type: string;
+  status: string;
+  openable: boolean;
 }
 
 type DetailState =
   | { kind: "loading" }
-  | { kind: "ready"; client: { name: string; sector: string; status: string } }
+  | { kind: "ready"; client: ClientPayload }
   | { kind: "not-found" }
   | { kind: "denied" }
   | { kind: "unreachable" };
 
-/** Client detail workspace: profile summary plus review/document/finding/report areas. */
+function typeLabel(locale: "en" | "ar", reviewType: string): string {
+  return reviewType === "JOFO" ? t(locale, "review.typeJofotara") : t(locale, "review.typeSalesGl");
+}
+
+function statusLabel(locale: "en" | "ar", status: string): string {
+  return t(locale, `review.status.${status.toLowerCase()}`);
+}
+
+function toRow(locale: "en" | "ar", engagement: EngagementPayload): ReviewRow {
+  return {
+    id: engagement.id,
+    period: `${engagement.period_start} – ${engagement.period_end}`,
+    type: typeLabel(locale, engagement.review_type),
+    status: statusLabel(locale, engagement.status),
+    openable: true
+  };
+}
+
+/** Client detail: real profile and engagement list in connected builds; the
+ * demo keeps its explicitly illustrative content. */
 export default function ClientDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const { locale, setLocale } = useLocale();
   const [state, setState] = useState<DetailState>({ kind: "loading" });
+  const [rows, setRows] = useState<ReviewRow[]>([]);
   const demo = isDemoMode();
 
   useEffect(() => {
@@ -52,28 +72,110 @@ export default function ClientDetailPage({ params }: { params: Promise<{ id: str
       setState({
         kind: "ready",
         client: {
+          id: found.id,
           name: locale === "ar" ? found.nameAr : found.name,
           sector: locale === "ar" ? found.sectorAr : found.sector,
           status: found.status
         }
       });
+      setRows(
+        DEMO_REVIEWS.filter((review) => review.clientName === found.name).map((review) => ({
+          id: review.id,
+          period: review.period,
+          type: locale === "ar" ? review.typeAr : review.type,
+          status: t(locale, `review.status.${review.status}`),
+          openable: false
+        }))
+      );
       return;
     }
     const ctrl = new AbortController();
-    fetchClient(id, ctrl.signal)
-      .then((c) =>
-        setState({ kind: "ready", client: { name: c.name, sector: c.sector ?? "—", status: c.status } })
-      )
-      .catch((err: unknown) => {
+    (async () => {
+      try {
+        const client = await getClient(id);
+        const engagements = await listEngagements(id).catch(() => [] as EngagementPayload[]);
+        setState({ kind: "ready", client });
+        setRows(engagements.map((engagement) => toRow(locale, engagement)));
+      } catch (err: unknown) {
         if (err instanceof DOMException && err.name === "AbortError") return;
         if (err instanceof ApiRequestError && err.status === 404) setState({ kind: "not-found" });
         else if (err instanceof ApiRequestError && (err.status === 401 || err.status === 403)) {
           setState({ kind: "denied" });
         } else setState({ kind: "unreachable" });
-      });
+      }
+    })();
     return () => ctrl.abort();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id, locale]);
+  }, [id, locale, demo]);
+
+  const client = state.kind === "ready" ? state.client : null;
+
+  const reviewsTab = (
+    <div>
+      <h2>{t(locale, "client.reviewsTitle")}</h2>
+      <p className="tp-muted">{t(locale, "client.reviewsHint")}</p>
+      {rows.length === 0 ? (
+        <EmptyState title={t(locale, "client.reviewsTitle")} hint={t(locale, "client.noReviews")} />
+      ) : (
+        <div className="tp-table-wrap">
+          <table className="tp-table">
+            <thead>
+              <tr>
+                <th>{t(locale, "reviews.period")}</th>
+                <th>{t(locale, "reviews.type")}</th>
+                <th>{t(locale, "clients.status")}</th>
+                {rows.some((row) => row.openable) ? <th aria-label="actions" /> : null}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row) => (
+                <tr key={row.id}>
+                  <td className="tp-num" dir="ltr">
+                    {row.period}
+                  </td>
+                  <td>{row.type}</td>
+                  <td>{row.status}</td>
+                  {row.openable ? (
+                    <td>
+                      <Link href={`/reviews/${row.id}`}>{t(locale, "clients.open")}</Link>
+                    </td>
+                  ) : null}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <div className="tp-actions">
+        <Link href={`/reviews/new?client=${encodeURIComponent(id)}`} className="tp-primary">
+          {t(locale, "dashboard.newReview")}
+        </Link>
+      </div>
+    </div>
+  );
+
+  const profileTab = (
+    <div className="tp-card">
+      <dl className="tp-kv">
+        <div>
+          <dt>{t(locale, "clients.name")}</dt>
+          <dd>{client?.name}</dd>
+        </div>
+        <div>
+          <dt>{t(locale, "clients.status")}</dt>
+          <dd>{client?.status === "active" ? t(locale, "clients.active") : t(locale, "clients.archived")}</dd>
+        </div>
+        <div>
+          <dt>{t(locale, "clients.sector")}</dt>
+          <dd>{client?.sector ?? "—"}</dd>
+        </div>
+        <div>
+          <dt>{t(locale, "client.reviewsCount")}</dt>
+          <dd className="tp-num">{rows.length}</dd>
+        </div>
+      </dl>
+      <p className="tp-muted">{t(locale, "client.profileHint")}</p>
+    </div>
+  );
 
   return (
     <main>
@@ -103,30 +205,51 @@ export default function ClientDetailPage({ params }: { params: Promise<{ id: str
         </div>
       ) : state.kind === "ready" ? (
         <>
-          <h1>{state.client.name}</h1>
+          <h1>{client?.name}</h1>
           <p className="tp-muted">
-            {t(locale, "clients.sector")}: {state.client.sector} · {t(locale, "clients.status")}:{" "}
-            {state.client.status === "active" ? t(locale, "clients.active") : t(locale, "clients.archived")}
+            {t(locale, "clients.sector")}: {client?.sector ?? "—"} · {t(locale, "clients.status")}:{" "}
+            {client?.status === "active" ? t(locale, "clients.active") : t(locale, "clients.archived")}
           </p>
           <Tabs
             tabs={[
-              { id: "profile", label: t(locale, "client.profile"), content: <PreviewOnly locale={locale} /> },
+              { id: "profile", label: t(locale, "client.profile"), content: profileTab },
+              { id: "reviews", label: t(locale, "client.engagements"), content: reviewsTab },
               {
-                id: "reviews",
-                label: t(locale, "client.engagements"),
-                content: (
-                  <PreviewOnly locale={locale}>
-                    <p>
-                      <Link href={`/reviews/new?client=${encodeURIComponent(id)}`} className="tp-primary">
-                        {t(locale, "dashboard.newReview")}
-                      </Link>
-                    </p>
-                  </PreviewOnly>
+                id: "documents",
+                label: t(locale, "client.documents"),
+                content: demo ? (
+                  <PreviewOnly locale={locale} />
+                ) : (
+                  <div className="tp-card">
+                    <h2>{t(locale, "client.documents")}</h2>
+                    <p className="tp-muted">{t(locale, "client.documentsHint")}</p>
+                  </div>
                 )
               },
-              { id: "documents", label: t(locale, "client.documents"), content: <PreviewOnly locale={locale} /> },
-              { id: "findings", label: t(locale, "client.findings"), content: <PreviewOnly locale={locale} /> },
-              { id: "reports", label: t(locale, "client.reports"), content: <PreviewOnly locale={locale} /> }
+              {
+                id: "findings",
+                label: t(locale, "client.findings"),
+                content: demo ? (
+                  <PreviewOnly locale={locale} />
+                ) : (
+                  <div className="tp-card">
+                    <h2>{t(locale, "client.findings")}</h2>
+                    <p className="tp-muted">{t(locale, "client.findingsHint")}</p>
+                  </div>
+                )
+              },
+              {
+                id: "reports",
+                label: t(locale, "client.reports"),
+                content: demo ? (
+                  <PreviewOnly locale={locale} />
+                ) : (
+                  <div className="tp-card">
+                    <h2>{t(locale, "client.reports")}</h2>
+                    <p className="tp-muted">{t(locale, "client.reportsHint")}</p>
+                  </div>
+                )
+              }
             ]}
           />
         </>
@@ -134,6 +257,3 @@ export default function ClientDetailPage({ params }: { params: Promise<{ id: str
     </main>
   );
 }
-
-
-

@@ -139,6 +139,10 @@ export async function createClient(name: string): Promise<ClientPayload> {
   });
 }
 
+export async function getClient(id: string): Promise<ClientPayload> {
+  return request<ClientPayload>(`/api/v1/clients/${encodeURIComponent(id)}`);
+}
+
 /** Engagement (review) record from the workspace API. */
 export interface EngagementPayload {
   id: string;
@@ -223,6 +227,31 @@ export interface DemoFinding {
   flags: string[];
 }
 
+export interface DemoCurrencyResult {
+  currency: string;
+  outcome: "RECONCILED" | "DIFFERENCE" | "MISSING_GL" | "MISSING_SALES" | "INCONCLUSIVE_COVERAGE";
+  sales_total: string | null;
+  gl_total: string | null;
+  delta: string | null;
+}
+
+export interface DemoCoverage {
+  complete: boolean;
+  scope: "COMPLETE" | "CURRENCIES" | "WHOLE_RUN" | "BLOCKED";
+  currencies: string[];
+  reasons: string[];
+  explanations: string[];
+}
+
+export interface DemoConclusion {
+  status: "BLOCKED" | "REVIEW_REQUIRED" | "NO_REVIEW_ITEMS";
+  headline: string;
+  detail: string;
+  caution: string;
+  currency_results: DemoCurrencyResult[];
+  coverage: DemoCoverage;
+}
+
 export interface DemoRunPayload {
   synthetic: boolean;
   label: string;
@@ -248,6 +277,7 @@ export interface DemoRunPayload {
   findings_fingerprint: string;
   summary: Record<string, unknown>;
   findings: DemoFinding[];
+  conclusion: DemoConclusion;
 }
 
 export async function listDemoFixtures(): Promise<DemoFixturePayload[]> {

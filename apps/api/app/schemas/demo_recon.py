@@ -67,6 +67,39 @@ class DemoFinding(BaseModel):
     flags: list[str]
 
 
+class DemoCurrencyResult(BaseModel):
+    currency: str
+    outcome: Literal[
+        "RECONCILED",
+        "DIFFERENCE",
+        "MISSING_GL",
+        "MISSING_SALES",
+        "INCONCLUSIVE_COVERAGE",
+    ]
+    sales_total: str | None = None
+    gl_total: str | None = None
+    delta: str | None = None
+
+
+class DemoCoverage(BaseModel):
+    complete: bool
+    scope: Literal["COMPLETE", "CURRENCIES", "WHOLE_RUN", "BLOCKED"]
+    currencies: list[str]
+    reasons: list[str]
+    explanations: list[str]
+
+
+class DemoConclusion(BaseModel):
+    """Presentation-only result summary; never a new calculation or verdict."""
+
+    status: Literal["BLOCKED", "REVIEW_REQUIRED", "NO_REVIEW_ITEMS"]
+    headline: str
+    detail: str
+    caution: str
+    currency_results: list[DemoCurrencyResult]
+    coverage: DemoCoverage
+
+
 class DemoReconRunOut(BaseModel):
     synthetic: bool = True
     label: str
@@ -92,3 +125,4 @@ class DemoReconRunOut(BaseModel):
     findings_fingerprint: str
     summary: dict[str, Any]
     findings: list[DemoFinding]
+    conclusion: DemoConclusion

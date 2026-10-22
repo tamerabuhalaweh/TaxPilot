@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TaxPilot design proposal — Reports</title>
+    <link rel="stylesheet" href="../assets/app.css" />
+  </head>
+  <body>
+    <div class="design-flag"><strong>Design proposal v2</strong> · Reports · 1440 / 390 · not the running app</div>
+    <div class="app">
+      <aside class="sidebar">
+        <a class="brand" href="dashboard.html" aria-label="TaxPilot design home"><span class="brandmark">TP</span><span class="brand-copy"><span class="brand-name">TaxPilot</span><span class="brand-sub">Reconciliation workspace</span></span></a>
+        <div class="workspace-switch"><span class="workspace-avatar">FS</span><span class="workspace-copy"><span>Workspace</span><strong>Founder workspace</strong></span><span class="workspace-chevron" data-icon="chevron"></span></div>
+        <nav class="nav" aria-label="Primary navigation">
+          <span class="nav-label">Workspace</span>
+          <a href="dashboard.html"><span class="nav-icon" data-icon="dashboard"></span>Dashboard</a>
+          <a href="clients.html"><span class="nav-icon" data-icon="clients"></span>Clients</a>
+          <a href="reconciliation.html"><span class="nav-icon" data-icon="reviews"></span>Reviews<span class="nav-badge">3</span></a>
+          <a href="reports.html" aria-current="page"><span class="nav-icon" data-icon="reports"></span>Reports</a>
+          <span class="nav-label">Account</span>
+          <a href="#settings"><span class="nav-icon" data-icon="settings"></span>Settings</a>
+        </nav>
+        <div class="sidebar-note"><div class="sidebar-note-head"><span data-icon="shield"></span> Synthetic workspace</div><p>Only invented demo records are present. No customer data and no production tax conclusion.</p></div>
+        <div class="sidebar-bottom">
+          <div class="user-row"><span class="user-avatar">FD</span><span class="user-copy"><strong>Founder Demo</strong><span>Owner</span></span></div>
+          <div class="locale" aria-label="Interface language"><a class="active" href="reports.html" aria-current="true">EN</a><a href="reconciliation-ar.html" lang="ar" dir="rtl">العربية</a></div>
+        </div>
+      </aside>
+
+      <div class="workspace">
+        <div class="mobile-head">
+          <a class="brand" href="dashboard.html"><span class="brandmark">TP</span><span class="brand-copy"><span class="brand-name">TaxPilot</span></span></a>
+          <div class="mobile-head-actions"><span class="badge badge-synthetic">Synthetic</span><span class="mobile-icon-btn" data-icon="menu"></span><span class="user-avatar">FD</span></div>
+        </div>
+
+        <header class="utility">
+          <div class="utility-left"><span class="crumbs"><a href="reconciliation.html">Reconciliation</a> · <strong>Reports</strong> · 2026</span></div>
+          <div class="utility-right"><span class="connection"><i></i> Local API connected</span><button class="command" type="button"><span data-icon="search"></span> Search report runs <kbd>⌘ K</kbd></button></div>
+        </header>
+
+        <main class="content">
+          <div class="page-head">
+            <div class="page-head-copy">
+              <div class="page-meta"><span>Report package</span><span class="dot"></span><span>Founder Synthetic Client · 2026</span><span class="dot"></span><span class="badge badge-synthetic">Synthetic run</span></div>
+              <h1>Report package</h1>
+              <p class="page-description">A clear manifest of what the exported report contains, which run it belongs to, and what stays in English. No decorative document preview is used.</p>
+            </div>
+            <div class="page-actions">
+              <a class="btn btn-secondary" href="findings.html"><span data-icon="arrow"></span> Findings</a>
+              <a class="btn btn-primary" href="#exports"><span data-icon="download"></span> Export report</a>
+            </div>
+          </div>
+
+          <div class="synthetic-strip" role="note"><span data-icon="alert"></span><strong>SYNTHETIC DEMO DATA — NOT CUSTOMER RECORDS / NOT A TAX FILING</strong><span>The report carries this label in every export.</span></div>
+
+          <nav class="tabs" aria-label="Review workspace sections">
+            <a href="#documents">Documents</a>
+            <a href="#mapping">Mapping</a>
+            <a href="reconciliation.html">Reconciliation</a>
+            <a href="findings.html">Findings <span class="count">5</span></a>
+            <a class="active" href="reports.html" aria-current="page">Reports</a>
+          </nav>
+
+          <div class="reports-layout">
+            <section class="panel report-package">
+              <div class="report-package-head">
+                <div>
+                  <div class="page-meta"><span>Export manifest</span><span class="dot"></span><span class="num">synthetic-sales-gl-v1</span></div>
+                  <h2>Synthetic reconciliation report</h2>
+                  <p>Sales register vs general ledger (JOD + USD) · Founder Synthetic Client · 2026</p>
+                </div>
+                <div class="context-badges" style="justify-content: flex-end"><span class="badge badge-warning">Review required</span><span class="badge badge-synthetic">Synthetic</span></div>
+              </div>
+
+              <div class="report-sheet">
+                <div class="report-summary-grid">
+                  <div class="report-summary-card primary">
+                    <span class="label">Result summary</span>
+                    <h3>Review required</h3>
+                    <p>1 currency differs beyond tolerance: JOD. Coverage is incomplete for USD, so no conclusion is stated for that currency.</p>
+                  </div>
+                  <div class="report-summary-card">
+                    <span class="label">Report run</span>
+                    <dl class="report-facts">
+                      <div><dt>Findings</dt><dd>5</dd></div>
+                      <div><dt>Review required</dt><dd>3</dd></div>
+                      <div><dt>Informational</dt><dd>2</dd></div>
+                      <div><dt>Currency outcomes</dt><dd>JOD · USD</dd></div>
+                    </dl>
+                  </div>
+                </div>
+
+                <div class="panel-head" style="margin-bottom: 0"><div><h3>What the report contains</h3><p>The manifest mirrors the actual export contract, not a mock document.</p></div></div>
+                <div class="report-manifest">
+                  <div class="manifest-row"><span class="check" data-icon="check"></span><div><strong>Result summary and currency outcomes</strong><span>Conclusion, the exact JOD difference, and the explicit USD coverage state.</span></div><code>section 1</code></div>
+                  <div class="manifest-row"><span class="check" data-icon="check"></span><div><strong>Five findings in review order</strong><span>Three review-required items first, each with what happened, why it matters, next checks, and evidence.</span></div><code>section 2</code></div>
+                  <div class="manifest-row"><span class="check" data-icon="check"></span><div><strong>Source-row evidence</strong><span>Dataset IDs, row numbers, and references for the difference and coverage findings.</span></div><code>section 3</code></div>
+                  <div class="manifest-row"><span class="check" data-icon="check"></span><div><strong>Traceability and periods</strong><span>Both fingerprints, policy, rules version, engagement period, and scenario comparison period.</span></div><code>section 4</code></div>
+                </div>
+
+                <div class="panel-head" style="margin: 18px 0 0"><div><h3>Currency outcomes included</h3><p>USD totals remain blank in the report because the comparison is inconclusive.</p></div></div>
+                <div class="queue-scroll">
+                  <table class="data-table">
+                    <thead><tr><th>Currency</th><th class="right">Sales total</th><th class="right">GL total</th><th class="right">Delta</th><th>Outcome</th></tr></thead>
+                    <tbody>
+                      <tr><td class="num">JOD</td><td class="right num">3,500.000</td><td class="right num">3,400.000</td><td class="right num" style="color: var(--danger); font-weight: 600">100.000</td><td><span class="badge badge-danger">Difference beyond tolerance</span></td></tr>
+                      <tr><td class="num">USD</td><td class="right num">—</td><td class="right num">—</td><td class="right num">—</td><td><span class="badge badge-coverage">Coverage incomplete</span></td></tr>
+                    </tbody>
+                  </table>
+                </div>
+
+                <div id="exports" class="report-export-row">
+                  <a class="export-action primary" href="#download-pdf">
+                    <span class="export-icon" data-icon="download"></span>
+                    <span><strong>Export PDF</strong><span>English · A4 · labelled synthetic report</span></span>
+                  </a>
+                  <a class="export-action" href="#download-xlsx">
+                    <span class="export-icon" data-icon="file"></span>
+                    <span><strong>Export XLSX</strong><span>English · structured workbook · labelled synthetic data</span></span>
+                  </a>
+                </div>
+
+                <div class="language-note" style="margin-top: 12px"><strong>Report language</strong>PDF and XLSX reports are generated in English only. Arabic applies to the interface; engine text and exported files stay in English.</div>
+                <p class="finding-footnote">Exports are bound to the displayed run’s reconciliation and findings fingerprints. If the run changes, the previous download is rejected as stale rather than silently reused.</p>
+              </div>
+            </section>
+
+            <aside class="report-side">
+              <section class="side-panel">
+                <h3>Report run</h3>
+                <div class="report-run"><span class="report-run-icon" data-icon="document"></span><div><strong>synthetic-sales-gl-v1</strong><span>Sales register vs general ledger</span></div></div>
+                <div class="fingerprint"><span>Reconciliation fingerprint</span><code>89dbedf9108cb00fa26a92c88d3f00b51acc10db18afb25d46067810ffa34302</code></div>
+                <div class="fingerprint"><span>Findings fingerprint</span><code>4798d515f0ca2cf9c03c44504328d85f57b09626367e90ea33fc12836e0b760b</code></div>
+                <p class="run-note">Both fingerprints travel with the report so the exported document can be matched to this exact run.</p>
+              </section>
+
+              <section class="side-panel">
+                <h3>Traceability</h3>
+                <div class="report-trace">
+                  <div class="trace-row"><span>Policy</span><code>DEMO-GL-POL-1 · v1</code></div>
+                  <div class="trace-row"><span>Rules</span><code>v1 · JO</code></div>
+                  <div class="trace-row"><span>Basis</span><code>AGGREGATE_PERIOD · NET</code></div>
+                  <div class="trace-row"><span>Scope</span><code>ACCOUNT 4100 · JOD + USD</code></div>
+                  <div class="trace-row"><span>Tolerance</span><code>0</code></div>
+                  <div class="trace-row"><span>Engagement period</span><code>2026-01-01 — 2026-12-31</code></div>
+                  <div class="trace-row"><span>Scenario period</span><code>2026-01-01 — 2026-12-31</code></div>
+                </div>
+              </section>
+
+              <section class="side-panel">
+                <h3>Export behavior</h3>
+                <p class="run-note" style="margin-top: 0">The report is generated from the deterministic synthetic run and carries the fixed synthetic label. It is not production tax advice and does not include client files.</p>
+                <div class="recon-callout" style="margin-top: 10px"><span data-icon="shield"></span><div><strong>No fake document preview</strong><p>The manifest describes the real PDF/XLSX contents instead of showing a bootstrap document image.</p></div></div>
+              </section>
+            </aside>
+          </div>
+
+          <div class="screen-footer-note"><span data-icon="shield"></span><span>Design proposal only. Export labels and contents follow the local synthetic report contract; no download is produced by this static screen.</span></div>
+        </main>
+      </div>
+    </div>
+
+    <nav class="mobile-nav" aria-label="Mobile navigation">
+      <a href="dashboard.html"><span class="nav-icon" data-icon="dashboard"></span>Home</a>
+      <a href="clients.html"><span class="nav-icon" data-icon="clients"></span>Clients</a>
+      <a href="reconciliation.html" aria-current="page"><span class="nav-icon" data-icon="reviews"></span>Reviews</a>
+      <a href="reports.html"><span class="nav-icon" data-icon="reports"></span>Reports</a>
+      <a href="#settings"><span class="nav-icon" data-icon="settings"></span>Settings</a>
+    </nav>
+    <script src="../assets/icons.js"></script>
+  </body>
+</html>

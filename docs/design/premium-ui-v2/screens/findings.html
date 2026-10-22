@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TaxPilot design proposal — Findings investigation</title>
+    <link rel="stylesheet" href="../assets/app.css" />
+  </head>
+  <body>
+    <div class="design-flag"><strong>Design proposal v2</strong> · Findings investigation · 1440 / 390 · not the running app</div>
+    <div class="app">
+      <aside class="sidebar">
+        <a class="brand" href="dashboard.html" aria-label="TaxPilot design home"><span class="brandmark">TP</span><span class="brand-copy"><span class="brand-name">TaxPilot</span><span class="brand-sub">Reconciliation workspace</span></span></a>
+        <div class="workspace-switch"><span class="workspace-avatar">FS</span><span class="workspace-copy"><span>Workspace</span><strong>Founder workspace</strong></span><span class="workspace-chevron" data-icon="chevron"></span></div>
+        <nav class="nav" aria-label="Primary navigation">
+          <span class="nav-label">Workspace</span>
+          <a href="dashboard.html"><span class="nav-icon" data-icon="dashboard"></span>Dashboard</a>
+          <a href="clients.html"><span class="nav-icon" data-icon="clients"></span>Clients</a>
+          <a href="reconciliation.html" aria-current="page"><span class="nav-icon" data-icon="reviews"></span>Reviews<span class="nav-badge">3</span></a>
+          <a href="reports.html"><span class="nav-icon" data-icon="reports"></span>Reports</a>
+          <span class="nav-label">Account</span>
+          <a href="#settings"><span class="nav-icon" data-icon="settings"></span>Settings</a>
+        </nav>
+        <div class="sidebar-note"><div class="sidebar-note-head"><span data-icon="shield"></span> Synthetic workspace</div><p>Only invented demo records are present. No customer data and no production tax conclusion.</p></div>
+        <div class="sidebar-bottom">
+          <div class="user-row"><span class="user-avatar">FD</span><span class="user-copy"><strong>Founder Demo</strong><span>Owner</span></span></div>
+          <div class="locale" aria-label="Interface language"><a class="active" href="findings.html" aria-current="true">EN</a><a href="reconciliation-ar.html" lang="ar" dir="rtl">العربية</a></div>
+        </div>
+      </aside>
+
+      <div class="workspace">
+        <div class="mobile-head">
+          <a class="brand" href="dashboard.html"><span class="brandmark">TP</span><span class="brand-copy"><span class="brand-name">TaxPilot</span></span></a>
+          <div class="mobile-head-actions"><span class="badge badge-synthetic">Synthetic</span><span class="mobile-icon-btn" data-icon="menu"></span><span class="user-avatar">FD</span></div>
+        </div>
+
+        <header class="utility">
+          <div class="utility-left"><span class="crumbs"><a href="reconciliation.html">Reconciliation</a> · <strong>Findings</strong> · 2026</span></div>
+          <div class="utility-right"><span class="connection"><i></i> Local API connected</span><button class="command" type="button"><span data-icon="search"></span> Search findings <kbd>⌘ K</kbd></button></div>
+        </header>
+
+        <main class="content">
+          <div class="page-head">
+            <div class="page-head-copy">
+              <div class="page-meta"><span>Findings investigation</span><span class="dot"></span><span>Founder Synthetic Client · 2026</span><span class="dot"></span><span class="badge badge-synthetic">Synthetic run</span></div>
+              <h1>Five findings, ordered for review</h1>
+              <p class="page-description">Review-required items appear first. The selected finding keeps the explanation, source-row evidence, rule, and next checks together.</p>
+            </div>
+            <div class="page-actions">
+              <a class="btn btn-secondary" href="reconciliation.html"><span data-icon="arrow"></span> Reconciliation</a>
+              <a class="btn btn-primary" href="reports.html"><span data-icon="download"></span> Export report</a>
+            </div>
+          </div>
+
+          <div class="synthetic-strip" role="note"><span data-icon="alert"></span><strong>SYNTHETIC DEMO DATA — NOT CUSTOMER RECORDS / NOT A TAX FILING</strong><span>Finding text and evidence rows are from the built-in scenario.</span></div>
+
+          <nav class="tabs" aria-label="Review workspace sections">
+            <a href="#documents">Documents</a>
+            <a href="#mapping">Mapping</a>
+            <a href="reconciliation.html">Reconciliation</a>
+            <a class="active" href="findings.html" aria-current="page">Findings <span class="count">5</span></a>
+            <a href="reports.html">Reports</a>
+          </nav>
+
+          <div class="run-bar" style="margin-top: 0">
+            <div class="run-scenario"><span class="badge badge-info">Run inspected</span><span class="num strong">synthetic-sales-gl-v1</span><span class="muted small">Findings fingerprint <span class="num">4798d515f0ca</span></span></div>
+            <div class="run-meta"><span>5 findings</span><span>3 review required</span><span>2 informational</span></div>
+          </div>
+
+          <div class="findings-toolbar">
+            <div class="findings-search"><span data-icon="search"></span><input type="search" placeholder="Search findings, rules, references" aria-label="Search findings" /></div>
+            <div class="filter-group" role="group" aria-label="Filter findings">
+              <button class="chip active" type="button" aria-pressed="true">All (5)</button>
+              <button class="chip" type="button" aria-pressed="false">Review required (3)</button>
+              <button class="chip" type="button" aria-pressed="false">Informational (2)</button>
+            </div>
+            <span class="sort-note">Review-required first · high severity before medium</span>
+          </div>
+
+          <div class="findings-layout">
+            <section class="panel findings-list" aria-label="Findings list">
+              <div class="findings-list-head"><span>5 findings</span><span>Ordered for review</span></div>
+
+              <button class="finding-row active" type="button" aria-current="true">
+                <div class="finding-row-top"><span class="severity severity-high">High</span><span class="badge badge-danger">Difference</span><span class="badge badge-neutral">Review required</span></div>
+                <h3>Sales and GL totals differ (JOD)</h3>
+                <div class="finding-row-meta"><span>RECONCILIATION_DIFFERENCE</span><span>·</span><span>JOD</span><span>·</span><span class="num">100.000</span></div>
+              </button>
+
+              <button class="finding-row" type="button">
+                <div class="finding-row-top"><span class="severity severity-medium">Medium</span><span class="badge badge-warning">Duplicate sales</span><span class="badge badge-neutral">Review required</span></div>
+                <h3>Possible duplicate sales invoice rows</h3>
+                <div class="finding-row-meta"><span>REVIEW_CANDIDATE</span><span>·</span><span>USD</span><span>·</span><span class="num">2 rows</span></div>
+              </button>
+
+              <button class="finding-row" type="button">
+                <div class="finding-row-top"><span class="severity severity-medium">Medium</span><span class="badge badge-coverage">Coverage incomplete</span><span class="badge badge-neutral">Review required</span></div>
+                <h3>Reconciliation inconclusive (USD): incomplete coverage</h3>
+                <div class="finding-row-meta"><span>DATA_QUALITY</span><span>·</span><span>USD</span><span>·</span><span class="num">COVERAGE_DUPLICATE</span></div>
+              </button>
+
+              <button class="finding-row" type="button">
+                <div class="finding-row-top"><span class="severity severity-low">Low</span><span class="badge badge-info">Reversal noted</span><span class="badge badge-neutral">Informational</span></div>
+                <h3>Reversal preserved</h3>
+                <div class="finding-row-meta"><span>INFORMATIONAL</span><span>·</span><span>JOD</span><span>·</span><span class="num">J-9</span></div>
+              </button>
+
+              <button class="finding-row" type="button">
+                <div class="finding-row-top"><span class="severity severity-low">Low</span><span class="badge badge-success">Credit note linked</span><span class="badge badge-neutral">Informational</span></div>
+                <h3>Credit note preserved</h3>
+                <div class="finding-row-meta"><span>INFORMATIONAL</span><span>·</span><span>JOD</span><span>·</span><span class="num">CN-1</span></div>
+              </button>
+            </section>
+
+            <article class="panel finding-detail">
+              <div class="detail-top">
+                <div>
+                  <div class="detail-badges"><span class="severity severity-high">High severity</span><span class="badge badge-danger">Difference</span><span class="badge badge-neutral">Review required</span><span class="badge badge-synthetic">Synthetic</span></div>
+                  <h2>Sales and GL totals differ (JOD)</h2>
+                  <p>Finding <span class="num">89dbedf9108c-0003</span> · Engine text is generated in English.</p>
+                </div>
+                <button class="btn btn-secondary btn-sm" type="button"><span data-icon="external"></span> Evidence view</button>
+              </div>
+
+              <div class="finding-summary">
+                <div class="finding-summary-main"><span>Exact difference</span><strong>100.000 <small style="font-size: 10px; font-family: var(--font); font-weight: 600">JOD</small></strong><small>Sales minus GL · beyond 0 tolerance</small></div>
+                <div class="finding-summary-cell"><span>Category</span><strong>Reconciliation difference</strong></div>
+                <div class="finding-summary-cell"><span>Outcome kind</span><strong>DIFFERENCE</strong></div>
+                <div class="finding-summary-cell"><span>Rule</span><strong class="num">JO/REC-005/1</strong></div>
+              </div>
+
+              <div class="detail-grid">
+                <div class="detail-block"><h3>What happened</h3><p>Sales total <span class="num">3,500.000 JOD</span> versus GL total <span class="num">3,400.000 JOD</span>. The exact delta is <span class="num">100.000 JOD</span>, beyond the declared tolerance of <span class="num">0</span>.</p></div>
+                <div class="detail-block"><h3>Why this matters</h3><p>The approved policy’s account scope and credit-positive convention were applied, and the totals still do not agree. The run therefore needs an accountant’s review before it can be relied on.</p></div>
+                <div class="detail-block"><h3>What we compared</h3><p>Sales-register NET measure total against the in-scope GL posting total for JOD, using account <span class="num">4100</span>, aggregate period basis, and the declared synthetic policy.</p></div>
+                <div class="detail-block guidance"><h3>What to check next</h3><p>Review the in-scope GL postings and sales rows for JOD in this period. Confirm the source evidence below, then determine whether the difference is a missing posting, a timing issue, or an amount mismatch.</p></div>
+              </div>
+
+              <div class="recon-callout"><span data-icon="alert"></span><div><strong>Coverage still applies to the whole result</strong><p>The USD currency bucket is inconclusive because of duplicate rows. A JOD difference does not turn the whole comparison into a conclusive result.</p></div></div>
+
+              <div class="evidence-head"><h3>Source evidence</h3><span>6 rows · synthetic datasets only</span></div>
+              <table class="evidence-table">
+                <thead><tr><th>Side</th><th>Dataset</th><th>Row</th><th>Reference</th></tr></thead>
+                <tbody>
+                  <tr><td>General ledger</td><td class="dataset">SYNTHETIC-GL-v1</td><td class="num">2</td><td class="num">J-1-1</td></tr>
+                  <tr><td>General ledger</td><td class="dataset">SYNTHETIC-GL-v1</td><td class="num">3</td><td class="num">J-2-1</td></tr>
+                  <tr><td>General ledger</td><td class="dataset">SYNTHETIC-GL-v1</td><td class="num">4</td><td class="num">J-3-1</td></tr>
+                  <tr><td>Sales register</td><td class="dataset">SYNTHETIC-SALES-v1</td><td class="num">2</td><td class="num">INV-1001</td></tr>
+                  <tr><td>Sales register</td><td class="dataset">SYNTHETIC-SALES-v1</td><td class="num">3</td><td class="num">INV-1002</td></tr>
+                  <tr><td>Sales register</td><td class="dataset">SYNTHETIC-SALES-v1</td><td class="num">4</td><td class="num">INV-1003</td></tr>
+                </tbody>
+              </table>
+              <p class="evidence-note">These rows belong to the built-in synthetic scenario, not to the client’s records. Row numbers are reported exactly as the engine returns them.</p>
+
+              <details class="technical-details" open>
+                <summary>Technical details</summary>
+                <dl class="technical-grid">
+                  <div><dt>Finding ID</dt><dd>89dbedf9108c-0003</dd></div>
+                  <div><dt>Rule</dt><dd>JO/REC-005/1</dd></div>
+                  <div><dt>Outcome kind</dt><dd>DIFFERENCE</dd></div>
+                  <div><dt>Category</dt><dd>RECONCILIATION_DIFFERENCE</dd></div>
+                  <div><dt>Policy</dt><dd>DEMO-GL-POL-1 · v1</dd></div>
+                  <div><dt>Rules version</dt><dd>1</dd></div>
+                  <div><dt>Rationale</dt><dd>TOTALS_DIFFER</dd></div>
+                  <div><dt>Review state</dt><dd>PENDING_REVIEW</dd></div>
+                </dl>
+              </details>
+              <p class="finding-footnote">No approval, dismissal, or resolution control is shown because this run does not persist review states. The design does not imply a status change that the API cannot record.</p>
+            </article>
+          </div>
+
+          <div class="mobile-findings">
+            <details class="panel mobile-finding" open>
+              <summary><div class="finding-row-top"><span class="severity severity-high">High</span><span class="badge badge-danger">Difference</span><span class="badge badge-neutral">Review required</span></div><h3 style="margin: 4px 0 0">Sales and GL totals differ (JOD)</h3><div class="finding-row-meta"><span>JOD</span><span>·</span><span class="num">100.000</span><span>·</span><span>Review first</span></div></summary>
+              <div class="mobile-finding-body">
+                <div class="finding-summary" style="grid-template-columns: 1fr 1fr; margin-bottom: 10px"><div class="finding-summary-main" style="grid-column: span 2"><span>Exact difference</span><strong>100.000 <small style="font-size: 9px">JOD</small></strong><small>Sales minus GL · beyond 0 tolerance</small></div><div class="finding-summary-cell"><span>Severity</span><strong>High</strong></div><div class="finding-summary-cell"><span>Rule</span><strong class="num">JO/REC-005/1</strong></div></div>
+                <div class="detail-grid"><div class="detail-block"><h3>What happened</h3><p>Sales <span class="num">3,500.000 JOD</span> vs GL <span class="num">3,400.000 JOD</span>. Delta <span class="num">100.000 JOD</span>, beyond tolerance 0.</p></div><div class="detail-block"><h3>Why this matters</h3><p>The in-scope totals do not agree under the declared policy, so the result needs review.</p></div><div class="detail-block"><h3>What we compared</h3><p>Sales-register NET total vs in-scope GL posting total for account 4100.</p></div><div class="detail-block guidance"><h3>Check next</h3><p>Review the JOD GL postings and sales rows, then determine whether a posting is missing or an amount differs.</p></div></div>
+                <div class="evidence-head"><h3>Source evidence</h3><span>6 synthetic rows</span></div>
+                <table class="evidence-table"><thead><tr><th>Side</th><th>Dataset</th><th>Row</th><th>Ref</th></tr></thead><tbody><tr><td>GL</td><td class="dataset">SYNTHETIC-GL-v1</td><td class="num">2</td><td class="num">J-1-1</td></tr><tr><td>GL</td><td class="dataset">SYNTHETIC-GL-v1</td><td class="num">3</td><td class="num">J-2-1</td></tr><tr><td>GL</td><td class="dataset">SYNTHETIC-GL-v1</td><td class="num">4</td><td class="num">J-3-1</td></tr><tr><td>Sales</td><td class="dataset">SYNTHETIC-SALES-v1</td><td class="num">2</td><td class="num">INV-1001</td></tr><tr><td>Sales</td><td class="dataset">SYNTHETIC-SALES-v1</td><td class="num">3</td><td class="num">INV-1002</td></tr><tr><td>Sales</td><td class="dataset">SYNTHETIC-SALES-v1</td><td class="num">4</td><td class="num">INV-1003</td></tr></tbody></table>
+                <p class="evidence-note">Synthetic scenario rows only. No customer records.</p>
+                <p class="finding-footnote">No approval action is shown: the synthetic run does not persist a review state.</p>
+              </div>
+            </details>
+            <details class="panel mobile-finding"><summary><div class="finding-row-top"><span class="severity severity-medium">Medium</span><span class="badge badge-warning">Duplicate sales</span><span class="badge badge-neutral">Review required</span></div><h3 style="margin: 4px 0 0">Possible duplicate sales invoice rows</h3><div class="finding-row-meta"><span>USD</span><span>·</span><span class="num">2 rows</span></div></summary><div class="mobile-finding-body"><p class="muted small">Two sales rows share the same identity. Confirm whether they are repeated exports or distinct records, then re-run.</p></div></details>
+            <details class="panel mobile-finding"><summary><div class="finding-row-top"><span class="severity severity-medium">Medium</span><span class="badge badge-coverage">Coverage incomplete</span><span class="badge badge-neutral">Review required</span></div><h3 style="margin: 4px 0 0">Reconciliation inconclusive (USD)</h3><div class="finding-row-meta"><span>USD</span><span>·</span><span class="num">COVERAGE_DUPLICATE</span></div></summary><div class="mobile-finding-body"><p class="muted small">No USD totals or verdict are asserted because coverage is incomplete.</p></div></details>
+            <details class="panel mobile-finding"><summary><div class="finding-row-top"><span class="severity severity-low">Low</span><span class="badge badge-info">Reversal noted</span><span class="badge badge-neutral">Informational</span></div><h3 style="margin: 4px 0 0">Reversal preserved</h3><div class="finding-row-meta"><span>JOD</span><span>·</span><span class="num">J-9</span></div></summary><div class="mobile-finding-body"><p class="muted small">Reversal J-9 is linked to its original document and is not netted.</p></div></details>
+            <details class="panel mobile-finding"><summary><div class="finding-row-top"><span class="severity severity-low">Low</span><span class="badge badge-success">Credit note linked</span><span class="badge badge-neutral">Informational</span></div><h3 style="margin: 4px 0 0">Credit note preserved</h3><div class="finding-row-meta"><span>JOD</span><span>·</span><span class="num">CN-1</span></div></summary><div class="mobile-finding-body"><p class="muted small">Credit note CN-1 is linked to its original invoice and is not netted.</p></div></details>
+          </div>
+
+          <div class="screen-footer-note"><span data-icon="shield"></span><span>Design proposal only. Finding content, evidence rows, and references come from the local synthetic run.</span></div>
+        </main>
+      </div>
+    </div>
+
+    <nav class="mobile-nav" aria-label="Mobile navigation">
+      <a href="dashboard.html"><span class="nav-icon" data-icon="dashboard"></span>Home</a>
+      <a href="clients.html"><span class="nav-icon" data-icon="clients"></span>Clients</a>
+      <a href="reconciliation.html" aria-current="page"><span class="nav-icon" data-icon="reviews"></span>Reviews</a>
+      <a href="reports.html"><span class="nav-icon" data-icon="reports"></span>Reports</a>
+      <a href="#settings"><span class="nav-icon" data-icon="settings"></span>Settings</a>
+    </nav>
+    <script src="../assets/icons.js"></script>
+  </body>
+</html>

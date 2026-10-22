@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TaxPilot design proposal — مساحة التسوية بالعربية</title>
+    <link rel="stylesheet" href="../assets/app.css" />
+  </head>
+  <body>
+    <div class="design-flag"><strong>Design proposal v2</strong> · Arabic RTL reconciliation workspace · 1440 / 390 · not the running app</div>
+    <div class="app">
+      <aside class="sidebar">
+        <a class="brand" href="dashboard.html" aria-label="TaxPilot — لوحة التحكم"><span class="brandmark">TP</span><span class="brand-copy"><span class="brand-name" dir="ltr">TaxPilot</span><span class="brand-sub">مساحة عمل التسوية</span></span></a>
+        <div class="workspace-switch"><span class="workspace-avatar">FS</span><span class="workspace-copy"><span>مساحة العمل</span><strong>مساحة المؤسس التجريبية</strong></span><span class="workspace-chevron" data-icon="chevron"></span></div>
+        <nav class="nav" aria-label="التنقل الرئيسي">
+          <span class="nav-label">مساحة العمل</span>
+          <a href="dashboard.html"><span class="nav-icon" data-icon="dashboard"></span>لوحة التحكم</a>
+          <a href="clients.html"><span class="nav-icon" data-icon="clients"></span>العملاء</a>
+          <a href="reconciliation-ar.html" aria-current="page"><span class="nav-icon" data-icon="reviews"></span>المراجعات<span class="nav-badge">3</span></a>
+          <a href="reports.html"><span class="nav-icon" data-icon="reports"></span>التقارير</a>
+          <span class="nav-label">الحساب</span>
+          <a href="#settings"><span class="nav-icon" data-icon="settings"></span>الإعدادات</a>
+        </nav>
+        <div class="sidebar-note"><div class="sidebar-note-head"><span data-icon="shield"></span> مساحة عمل تجريبية</div><p>لا توجد إلا سجلات تجريبية مُختلقة. لا بيانات عملاء ولا نتيجة ضريبية إنتاجية.</p></div>
+        <div class="sidebar-bottom">
+          <div class="user-row"><span class="user-avatar">FD</span><span class="user-copy"><strong>المؤسس التجريبي</strong><span>المالك</span></span></div>
+          <div class="locale" aria-label="لغة الواجهة"><a href="reconciliation.html" lang="en" dir="ltr">EN</a><a class="active" href="reconciliation-ar.html" aria-current="true">العربية</a></div>
+        </div>
+      </aside>
+
+      <div class="workspace">
+        <div class="mobile-head">
+          <a class="brand" href="dashboard.html"><span class="brandmark">TP</span><span class="brand-copy"><span class="brand-name" dir="ltr">TaxPilot</span></span></a>
+          <div class="mobile-head-actions"><span class="badge badge-synthetic">تجريبي</span><span class="mobile-icon-btn" data-icon="menu"></span><span class="user-avatar">FD</span></div>
+        </div>
+
+        <header class="utility">
+          <div class="utility-left"><span class="crumbs"><a href="clients.html">العملاء</a> · <strong>العميل التجريبي للمؤسس</strong> · 2026</span></div>
+          <div class="utility-right"><span class="connection"><i></i> الخادم المحلي متصل</span><button class="command" type="button"><span data-icon="search"></span> الانتقال إلى ملاحظة <kbd>⌘ K</kbd></button></div>
+        </header>
+
+        <main class="content">
+          <div class="page-head">
+            <div class="page-head-copy">
+              <div class="page-meta"><span>مساحة عمل التسوية</span><span class="dot"></span><span class="num">2026-01-01 — 2026-12-31</span><span class="dot"></span><span class="badge badge-synthetic">سيناريو تجريبي</span></div>
+              <h1>العميل التجريبي للمؤسس</h1>
+              <p class="page-description">شغّل السيناريو التجريبي الحتمي، واقرأ النتيجة على مستوى العملة، واحتفظ بالفرق وأدلة التغطية في سياق واحد.</p>
+            </div>
+            <div class="page-actions">
+              <a class="btn btn-secondary" href="clients.html"><span class="rtl-flip" data-icon="arrow"></span> رجوع إلى العميل</a>
+              <a class="btn btn-primary" href="reports.html"><span data-icon="download"></span> تصدير التقرير</a>
+            </div>
+          </div>
+
+          <section class="workspace-context" aria-label="سياق المراجعة">
+            <span class="context-avatar">FS</span>
+            <div class="context-copy"><strong>العميل التجريبي للمؤسس</strong><span>تسوية المبيعات مع الأستاذ · معرّف المراجعة <span class="num">b57b9d4a</span></span></div>
+            <div class="context-periods">
+              <div class="context-period"><span>فترة المراجعة</span><strong>2026-01-01 — 2026-12-31</strong></div>
+              <div class="context-period"><span>فترة مقارنة السيناريو</span><strong>2026-01-01 — 2026-12-31</strong></div>
+            </div>
+            <div class="context-badges"><span class="badge badge-neutral"><span class="badge-dot"></span>مسودة</span><span class="badge badge-warning">تجريبي فقط</span></div>
+          </section>
+
+          <div class="run-bar">
+            <div class="run-scenario">
+              <label for="scenario-ar">السيناريو التجريبي</label>
+              <select class="run-select" id="scenario-ar"><option>سجل المبيعات مقابل دفتر الأستاذ (JOD + USD)</option><option>سجل المبيعات مقابل دفتر الأستاذ (فرق بسيط بالدينار)</option></select>
+            </div>
+            <div class="run-meta"><span class="badge badge-success"><span class="badge-dot"></span>التشغيل متاح</span><span class="num">synthetic-sales-gl-v1</span><span>القواعد v1</span><span>الاختصاص JO</span></div>
+          </div>
+
+          <div class="synthetic-strip" role="note"><span data-icon="alert"></span><strong dir="ltr">SYNTHETIC DEMO DATA — NOT CUSTOMER RECORDS / NOT A TAX FILING</strong><span>جميع الأرقام وصفوف الأدلة هنا من سيناريو مدمج، وليست من سجلات العميل.</span></div>
+
+          <div class="workflow-strip" aria-label="سير عمل المراجعة">
+            <div class="workflow-step done"><span class="step-num">1</span><span class="step-label">الارتباط</span></div>
+            <div class="workflow-step done"><span class="step-num">2</span><span class="step-label">تشغيل السيناريو</span></div>
+            <div class="workflow-step active"><span class="step-num">3</span><span class="step-label">التسوية</span></div>
+            <div class="workflow-step"><span class="step-num">4</span><span class="step-label">الملاحظات</span></div>
+            <div class="workflow-step"><span class="step-num">5</span><span class="step-label">التقرير</span></div>
+          </div>
+
+          <nav class="tabs" aria-label="أقسام مساحة المراجعة">
+            <a href="#documents">المستندات</a>
+            <a href="#mapping">المطابقة</a>
+            <a class="active" href="reconciliation-ar.html" aria-current="page">التسوية</a>
+            <a href="findings.html">الملاحظات <span class="count">5</span></a>
+            <a href="reports.html">التقارير</a>
+          </nav>
+
+          <div class="recon-layout">
+            <div class="recon-main">
+              <section class="panel result-panel">
+                <div class="result-head">
+                  <div>
+                    <div class="page-meta"><span>ملخص النتيجة</span><span class="dot"></span><span>التشغيل جاهز</span></div>
+                    <h2>تحتاج مراجعة</h2>
+                    <p>تختلف عملة واحدة عن هامش التفاوت: JOD. التغطية غير مكتملة لـ USD؛ لذلك لا تُذكر نتيجة لتلك العملة.</p>
+                  </div>
+                  <div class="context-badges" style="justify-content: flex-start"><span class="badge badge-danger">فرق بالدينار</span><span class="badge badge-coverage">USD غير مكتملة</span></div>
+                </div>
+                <div class="result-stats">
+                  <div class="result-stat"><span>الملاحظات</span><strong>5</strong></div>
+                  <div class="result-stat"><span>تحتاج مراجعة</span><strong class="danger">3</strong></div>
+                  <div class="result-stat"><span>معلوماتي</span><strong>2</strong></div>
+                  <div class="result-stat"><span>بلا نتيجة</span><strong class="coverage">1</strong></div>
+                </div>
+
+                <div class="comparison">
+                  <div class="comparison-label"><h3>مقارنة عملة JOD</h3><span>فترة مجمعة · NET · هامش التفاوت 0</span></div>
+                  <div class="compare-grid">
+                    <div class="total-block"><div class="source"><span data-icon="book"></span> سجل المبيعات</div><div class="amount">3,500.000 <span>JOD</span></div><div class="basis">مقياس NET لسجل المبيعات ضمن النطاق</div></div>
+                    <div class="delta-block"><span class="delta-label">الفرق</span><span class="delta-value">100.000</span><span class="delta-note">المبيعات تتجاوز الأستاذ<br />دقيق، يتجاوز هامش 0</span></div>
+                    <div class="total-block"><div class="source"><span data-icon="book"></span> دفتر الأستاذ العام</div><div class="amount">3,400.000 <span>JOD</span></div><div class="basis">الحساب 4100 · اتفاق الدائن موجب</div></div>
+                  </div>
+
+                  <div class="coverage-block" aria-label="نتيجة تغطية الدولار">
+                    <div class="coverage-head"><span data-icon="alert"></span> USD — التغطية غير مكتملة، لا إجماليات ولا نتيجة</div>
+                    <p>تعذّر حل صفوف المبيعات المكررة تلقائياً. لذلك لا تعرض الواجهة مقارنة بالدولار، لأن أدلة المصدر غير مكتملة.</p>
+                    <div class="coverage-facts"><div><span>نطاق التغطية</span><strong>USD فقط</strong></div><div><span>السبب</span><strong>COVERAGE_DUPLICATE</strong></div></div>
+                  </div>
+
+                  <div class="method-strip">
+                    <span class="method-label">الطريقة</span>
+                    <span class="method-chip">AGGREGATE_PERIOD</span>
+                    <span class="method-chip">NET</span>
+                    <span class="method-chip">CREDIT_POSITIVE</span>
+                    <span class="method-chip">النطاق 4100</span>
+                    <span class="method-chip">هامش 0</span>
+                    <details class="method-details"><summary>تفاصيل الطريقة</summary></details>
+                  </div>
+                  <div class="method-strip" style="border-top: 0; margin-top: 6px; padding-top: 0">
+                    <span class="context-note"><span data-icon="clock"></span> فترة مقارنة السيناريو: <span class="num">2026-01-01 — 2026-12-31</span></span>
+                    <span class="context-note" style="margin-inline-start: auto"><span data-icon="shield"></span> فترة المراجعة معروضة بشكل منفصل أعلاه.</span>
+                  </div>
+                </div>
+              </section>
+
+              <section class="panel">
+                <div class="panel-head"><div><h2>النتائج حسب العملة</h2><p>تُعرض فقط العملات التي لديها نتيجة قابلة للاستخدام أو حالة تغطية صريحة.</p></div></div>
+                <div class="queue-scroll">
+                  <table class="data-table">
+                    <thead><tr><th>العملة</th><th class="right">إجمالي المبيعات</th><th class="right">إجمالي الأستاذ</th><th class="right">الفرق</th><th class="right">هامش التفاوت</th><th>النتيجة</th></tr></thead>
+                    <tbody>
+                      <tr><td class="num">JOD</td><td class="right num">3,500.000</td><td class="right num">3,400.000</td><td class="right num" style="color: var(--danger); font-weight: 600">100.000</td><td class="right num">0</td><td><span class="badge badge-danger">فرق يتجاوز هامش التفاوت</span></td></tr>
+                      <tr><td class="num">USD</td><td class="right num">—</td><td class="right num">—</td><td class="right num">—</td><td class="right num">0</td><td><span class="badge badge-coverage">تغطية غير مكتملة</span></td></tr>
+                    </tbody>
+                  </table>
+                </div>
+                <p class="finding-footnote">إجماليات USD فارغة عمداً. العملة المتأثرة ليس لديها مقارنة conclusive، لذلك لا يُعرض إجمالي مشتق كأنه نتيجة.</p>
+              </section>
+
+              <section class="panel">
+                <div class="panel-head"><div><h2>ما يجب فحصه تالياً</h2><p>إرشاد المحرك، منفصل عن الأدلة وعن أي حالة اعتماد.</p></div></div>
+                <div class="next-checks">
+                  <div class="next-check"><span class="next-check-num">01</span><div><strong>راجع قيود الأستاذ وصفوف مبيعات JOD ضمن النطاق</strong><span>تحقق من فرق 100.000 مقابل السجلين لهذه العملة وهذه الفترة.</span></div></div>
+                  <div class="next-check"><span class="next-check-num">02</span><div><strong>حل صفوف مبيعات USD المكررة</strong><span>حدّد ما إذا كانت الصفوف 6 و7 تصديراً متكرراً أم سجلات منفصلة، ثم أعد التشغيل.</span></div></div>
+                  <div class="next-check"><span class="next-check-num">03</span><div><strong>لا تعتبر تساوي الإجماليات دليلاً على الاكتمال</strong><span>قد تكون الصفوف ناقصة أو مكررة أو خارج الفترة. تحقق من التغطية قبل الاعتماد على النتيجة.</span></div></div>
+                </div>
+                <div class="recon-callout" style="margin-top: 12px"><span data-icon="alert"></span><div><strong>تساوي الإجماليات ليس دليلاً على الاكتمال</strong><p>هذه نتيجة مجال مشروطة من سيناريو تجريبي، وليست سلطة ضريبية إنتاجية.</p></div></div>
+              </section>
+            </div>
+
+            <aside class="recon-side">
+              <section class="side-panel">
+                <h3>سياق التشغيل</h3>
+                <dl class="meta-list">
+                  <div class="meta-row"><dt>السيناريو</dt><dd>synthetic-sales-gl-v1</dd></div>
+                  <div class="meta-row"><dt>السياسة</dt><dd>DEMO-GL-POL-1 · v1</dd></div>
+                  <div class="meta-row"><dt>القواعد</dt><dd>v1 · JO</dd></div>
+                  <div class="meta-row"><dt>الأساس</dt><dd>AGGREGATE_PERIOD</dd></div>
+                  <div class="meta-row"><dt>المقياس</dt><dd>NET</dd></div>
+                  <div class="meta-row"><dt>نطاق الحساب</dt><dd>4100</dd></div>
+                  <div class="meta-row"><dt>هامش التفاوت</dt><dd>0</dd></div>
+                  <div class="meta-row"><dt>العملات</dt><dd>JOD · USD</dd></div>
+                </dl>
+                <p class="run-note">فترة السيناريو ثابتة داخل السيناريو. فترة المراجعة معروضة بشكل منفصل ولا يعيد التشغيل كتابتها.</p>
+              </section>
+
+              <section class="side-panel">
+                <h3>هوية التشغيل</h3>
+                <div class="fingerprint"><span>بصمة التسوية</span><code>89dbedf9108cb00fa26a92c88d3f00b51acc10db18afb25d46067810ffa34302</code></div>
+                <div class="fingerprint"><span>بصمة الملاحظات</span><code>4798d515f0ca2cf9c03c44504328d85f57b09626367e90ea33fc12836e0b760b</code></div>
+                <p class="run-note">ترتبط التقارير بالتشغيل المعروض. إذا تغيّر التشغيل، يُرفض التنزيل القديم بدلاً من إعادة استخدامه.</p>
+              </section>
+
+              <section class="side-panel">
+                <h3>تسليم التقرير</h3>
+                <p class="run-note" style="margin-top: 0">يتضمن التقرير النتيجة، ونتائج العملات، وملاحظات التغطية، والملاحظات مرتبة، وأدلة الصفوف، وفترتي المراجعة والسيناريو.</p>
+                <a class="btn btn-primary" href="reports.html" style="width: 100%; margin-top: 9px"><span data-icon="document"></span> مراجعة حزمة التقرير</a>
+                <a class="btn btn-secondary" href="findings.html" style="width: 100%; margin-top: 7px">فحص الملاحظات الخمس</a>
+                <p class="run-note">تقارير PDF وXLSX بالإنجليزية فقط، وتتضمن العلامة التجريبية.</p>
+              </section>
+            </aside>
+          </div>
+
+          <div class="screen-footer-note"><span data-icon="shield"></span><span>اقتراح تصميم فقط. الأرقام والبصمات والأدلة تطابق التشغيل التجريبي المحلي، وليست التطبيق قيد التشغيل.</span></div>
+        </main>
+      </div>
+    </div>
+
+    <nav class="mobile-nav" aria-label="التنقل على الهاتف">
+      <a href="dashboard.html"><span class="nav-icon" data-icon="dashboard"></span>الرئيسية</a>
+      <a href="clients.html"><span class="nav-icon" data-icon="clients"></span>العملاء</a>
+      <a href="reconciliation-ar.html" aria-current="page"><span class="nav-icon" data-icon="reviews"></span>المراجعات</a>
+      <a href="reports.html"><span class="nav-icon" data-icon="reports"></span>التقارير</a>
+      <a href="#settings"><span class="nav-icon" data-icon="settings"></span>الإعدادات</a>
+    </nav>
+    <script src="../assets/icons.js"></script>
+  </body>
+</html>

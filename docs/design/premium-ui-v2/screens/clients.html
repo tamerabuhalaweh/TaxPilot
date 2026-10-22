@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TaxPilot design proposal — Clients</title>
+    <link rel="stylesheet" href="../assets/app.css" />
+  </head>
+  <body>
+    <div class="design-flag"><strong>Design proposal v2</strong> · Clients and review navigation · 1440 / 390 · not the running app</div>
+    <div class="app">
+      <aside class="sidebar">
+        <a class="brand" href="dashboard.html" aria-label="TaxPilot design home">
+          <span class="brandmark">TP</span>
+          <span class="brand-copy"><span class="brand-name">TaxPilot</span><span class="brand-sub">Reconciliation workspace</span></span>
+        </a>
+        <div class="workspace-switch">
+          <span class="workspace-avatar">FS</span>
+          <span class="workspace-copy"><span>Workspace</span><strong>Founder workspace</strong></span>
+          <span class="workspace-chevron" data-icon="chevron"></span>
+        </div>
+        <nav class="nav" aria-label="Primary navigation">
+          <span class="nav-label">Workspace</span>
+          <a href="dashboard.html"><span class="nav-icon" data-icon="dashboard"></span>Dashboard</a>
+          <a href="clients.html" aria-current="page"><span class="nav-icon" data-icon="clients"></span>Clients</a>
+          <a href="reconciliation.html"><span class="nav-icon" data-icon="reviews"></span>Reviews<span class="nav-badge">3</span></a>
+          <a href="reports.html"><span class="nav-icon" data-icon="reports"></span>Reports</a>
+          <span class="nav-label">Account</span>
+          <a href="#settings"><span class="nav-icon" data-icon="settings"></span>Settings</a>
+        </nav>
+        <div class="sidebar-note">
+          <div class="sidebar-note-head"><span data-icon="shield"></span> Synthetic workspace</div>
+          <p>Only invented demo records are present. No customer data and no production tax conclusion.</p>
+        </div>
+        <div class="sidebar-bottom">
+          <div class="user-row"><span class="user-avatar">FD</span><span class="user-copy"><strong>Founder Demo</strong><span>Owner</span></span></div>
+          <div class="locale" aria-label="Interface language"><a class="active" href="clients.html" aria-current="true">EN</a><a href="reconciliation-ar.html" lang="ar" dir="rtl">العربية</a></div>
+        </div>
+      </aside>
+
+      <div class="workspace">
+        <div class="mobile-head">
+          <a class="brand" href="dashboard.html"><span class="brandmark">TP</span><span class="brand-copy"><span class="brand-name">TaxPilot</span></span></a>
+          <div class="mobile-head-actions"><span class="badge badge-synthetic">Synthetic</span><span class="mobile-icon-btn" data-icon="search"></span><span class="user-avatar">FD</span></div>
+        </div>
+
+        <header class="utility">
+          <div class="utility-left"><span class="crumbs"><a href="dashboard.html">Dashboard</a> · <strong>Clients</strong></span></div>
+          <div class="utility-right">
+            <span class="connection"><i></i> Local API connected</span>
+            <button class="command" type="button"><span data-icon="search"></span> Jump to a client or review <kbd>⌘ K</kbd></button>
+          </div>
+        </header>
+
+        <main class="content">
+          <div class="page-head">
+            <div class="page-head-copy">
+              <div class="page-meta"><span>Client book</span><span class="dot"></span><span>1 active client</span><span class="dot"></span><span class="badge badge-synthetic">Synthetic data</span></div>
+              <h1>Clients &amp; review periods</h1>
+              <p class="page-description">Move from the client book into a specific period without losing the relationship between the client, the engagement, and the review workspace.</p>
+            </div>
+            <div class="page-actions">
+              <button class="btn btn-secondary" type="button"><span data-icon="search"></span> Search</button>
+              <button class="btn btn-primary" type="button"><span data-icon="plus"></span> Add client</button>
+            </div>
+          </div>
+
+          <div class="workspace-note"><span data-icon="shield"></span><span>This client is a synthetic placeholder created for local design review. The record has no sector, contact, registration, or production documents.</span></div>
+
+          <div class="clients-layout">
+            <aside class="panel client-list">
+              <div class="client-list-head">
+                <h2>Client book</h2>
+                <span class="badge badge-neutral">1 active</span>
+              </div>
+              <label class="sr-only" for="client-search">Search clients</label>
+              <div class="client-search"><span data-icon="search"></span><input id="client-search" type="search" placeholder="Search clients" /></div>
+              <button class="client-row active" type="button" aria-pressed="true">
+                <span class="client-book-avatar">FS</span>
+                <span class="client-row-copy"><strong>Founder Synthetic Client</strong><span>Active · no sector</span></span>
+                <span class="client-row-meta">3</span>
+              </button>
+              <div class="client-list-foot">The list shows active clients only. Archived records are available behind the filter once the client API exposes them.</div>
+            </aside>
+
+            <div class="client-main">
+              <section class="client-hero">
+                <span class="client-hero-avatar">FS</span>
+                <div class="client-hero-copy">
+                  <h2>Founder Synthetic Client</h2>
+                  <p>Active client · sector not recorded · created for local synthetic review</p>
+                </div>
+                <div class="client-hero-actions">
+                  <a class="btn btn-secondary" href="reconciliation.html">Open latest review</a>
+                  <button class="btn btn-primary" type="button"><span data-icon="plus"></span> New review</button>
+                </div>
+                <div class="client-summary-strip" style="flex-basis: 100%">
+                  <div><span>Open reviews</span><strong>3 · all draft</strong></div>
+                  <div><span>Completed reviews</span><strong>0</strong></div>
+                  <div><span>Review periods</span><strong>2024 — 2026</strong></div>
+                </div>
+              </section>
+
+              <div class="period-rail" aria-label="Review periods for this client">
+                <a class="period-card" href="reconciliation.html">
+                  <span class="period-card-top"><span class="year">2024</span><span class="badge badge-neutral">Draft</span></span>
+                  <span class="range">2024-01-01 — 2024-12-31</span>
+                  <span class="review-type">Sales ↔ GL reconciliation</span>
+                </a>
+                <a class="period-card" href="reconciliation.html">
+                  <span class="period-card-top"><span class="year">2025</span><span class="badge badge-neutral">Draft</span></span>
+                  <span class="range">2025-01-01 — 2025-12-31</span>
+                  <span class="review-type">Sales ↔ GL reconciliation</span>
+                </a>
+                <a class="period-card active" href="reconciliation.html" aria-current="true">
+                  <span class="period-card-top"><span class="year">2026</span><span class="badge badge-info">Selected</span></span>
+                  <span class="range">2026-01-01 — 2026-12-31</span>
+                  <span class="review-type">Sales ↔ GL reconciliation</span>
+                </a>
+              </div>
+
+              <section class="selected-review">
+                <div class="selected-review-top">
+                  <div>
+                    <div class="page-meta"><span>Selected engagement</span><span class="dot"></span><span class="num">2026-01-01 — 2026-12-31</span></div>
+                    <h2>2026 Sales ↔ GL reconciliation</h2>
+                    <p>One engagement per period. The workspace keeps this period visible while the synthetic scenario is run and inspected.</p>
+                  </div>
+                  <span class="badge badge-neutral"><span class="badge-dot"></span>Draft</span>
+                </div>
+
+                <dl class="meta-grid">
+                  <div class="meta-cell"><dt>Review type</dt><dd>Sales ↔ GL</dd></div>
+                  <div class="meta-cell"><dt>Created</dt><dd>21 Oct 2026 · 10:13 UTC</dd></div>
+                  <div class="meta-cell"><dt>Workspace</dt><dd>Founder workspace</dd></div>
+                </dl>
+
+                <div class="review-state-line">
+                  <span class="badge badge-warning">Not yet run</span>
+                  <span>The engagement is a stored draft. No run, finding, approval, or exported report is persisted yet.</span>
+                </div>
+                <div class="page-actions" style="justify-content: flex-start; margin-top: 14px">
+                  <a class="btn btn-primary" href="reconciliation.html">Open review workspace <span data-icon="arrow"></span></a>
+                  <a class="btn btn-secondary" href="findings.html">Preview finding layout</a>
+                </div>
+              </section>
+
+              <div class="review-list-title">
+                <h3>All reviews for this client</h3>
+                <span>Newest period first</span>
+              </div>
+              <div class="panel" style="padding: 0 14px; overflow: hidden">
+                <table class="engagement-table">
+                  <thead><tr><th>Period</th><th>Review</th><th>Created</th><th>Status</th><th></th></tr></thead>
+                  <tbody>
+                    <tr>
+                      <td class="num">2026-01-01 — 2026-12-31</td><td>Sales ↔ GL</td><td class="num">21 Oct 2026</td><td><span class="badge badge-neutral">Draft</span></td>
+                      <td class="queue-actions"><a href="reconciliation.html">Open <span data-icon="arrow"></span></a></td>
+                    </tr>
+                    <tr>
+                      <td class="num">2025-01-01 — 2025-12-31</td><td>Sales ↔ GL</td><td class="num">21 Oct 2026</td><td><span class="badge badge-neutral">Draft</span></td>
+                      <td class="queue-actions"><a href="reconciliation.html">Open <span data-icon="arrow"></span></a></td>
+                    </tr>
+                    <tr>
+                      <td class="num">2024-01-01 — 2024-12-31</td><td>Sales ↔ GL</td><td class="num">21 Oct 2026</td><td><span class="badge badge-neutral">Draft</span></td>
+                      <td class="queue-actions"><a href="reconciliation.html">Open <span data-icon="arrow"></span></a></td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <div class="screen-footer-note"><span data-icon="shield"></span><span>Design proposal only. The client, periods, and statuses come from the local synthetic workspace; no production client record is shown.</span></div>
+        </main>
+      </div>
+    </div>
+
+    <nav class="mobile-nav" aria-label="Mobile navigation">
+      <a href="dashboard.html"><span class="nav-icon" data-icon="dashboard"></span>Home</a>
+      <a href="clients.html" aria-current="page"><span class="nav-icon" data-icon="clients"></span>Clients</a>
+      <a href="reconciliation.html"><span class="nav-icon" data-icon="reviews"></span>Reviews</a>
+      <a href="reports.html"><span class="nav-icon" data-icon="reports"></span>Reports</a>
+      <a href="#settings"><span class="nav-icon" data-icon="settings"></span>Settings</a>
+    </nav>
+    <script src="../assets/icons.js"></script>
+  </body>
+</html>

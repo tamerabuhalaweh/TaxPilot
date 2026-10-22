@@ -1,3 +1,5 @@
+import { EXTRA_STRINGS } from "./i18n-extra";
+
 export type Locale = "en" | "ar";
 
 export const STRINGS: Record<Locale, Record<string, string>> = {
@@ -539,7 +541,13 @@ export const STRINGS: Record<Locale, Record<string, string>> = {
 };
 
 export function t(locale: Locale, key: string): string {
-  return STRINGS[locale][key] ?? STRINGS.en[key] ?? key;
+  return (
+    STRINGS[locale][key] ??
+    EXTRA_STRINGS[locale][key] ??
+    STRINGS.en[key] ??
+    EXTRA_STRINGS.en[key] ??
+    key
+  );
 }
 
 export function dirOf(locale: Locale): "ltr" | "rtl" {

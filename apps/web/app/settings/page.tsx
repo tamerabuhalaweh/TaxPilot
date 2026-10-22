@@ -2,6 +2,8 @@
 
 import Link from "next/link";
 
+import { EmptyState } from "../../components/EmptyState";
+import { PageHeader } from "../../components/PageHeader";
 import { DemoBanner, PreviewOnly } from "../../components/Preview";
 import { useLocale } from "../../components/LocaleProvider";
 import { LocaleControls } from "../../components/LocaleControls";
@@ -21,12 +23,15 @@ export default function SettingsPage() {
         <LocaleControls locale={locale} onChange={setLocale} />
       </div>
       <DemoBanner locale={locale} />
-      <h1>{t(locale, "nav.settings")}</h1>
-      <PreviewOnly locale={locale} />
+      <PageHeader title={t(locale, "nav.settings")} description={t(locale, "settings.workspace")} />
+      <section className="tp-panel">
+        <EmptyState
+          title={t(locale, "settings.workspace")}
+          hint={t(locale, "settings.unavailable")}
+          icon="settings"
+        />
+        <PreviewOnly locale={locale} />
+      </section>
     </main>
   );
 }
-
-
-
-

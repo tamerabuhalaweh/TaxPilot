@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TaxPilot design proposal — Reconciliation workspace</title>
+    <link rel="stylesheet" href="../assets/app.css" />
+  </head>
+  <body>
+    <div class="design-flag"><strong>Design proposal v2</strong> · Reconciliation workspace · 1440 / 390 · not the running app</div>
+    <div class="app">
+      <aside class="sidebar">
+        <a class="brand" href="dashboard.html" aria-label="TaxPilot design home"><span class="brandmark">TP</span><span class="brand-copy"><span class="brand-name">TaxPilot</span><span class="brand-sub">Reconciliation workspace</span></span></a>
+        <div class="workspace-switch"><span class="workspace-avatar">FS</span><span class="workspace-copy"><span>Workspace</span><strong>Founder workspace</strong></span><span class="workspace-chevron" data-icon="chevron"></span></div>
+        <nav class="nav" aria-label="Primary navigation">
+          <span class="nav-label">Workspace</span>
+          <a href="dashboard.html"><span class="nav-icon" data-icon="dashboard"></span>Dashboard</a>
+          <a href="clients.html"><span class="nav-icon" data-icon="clients"></span>Clients</a>
+          <a href="reconciliation.html" aria-current="page"><span class="nav-icon" data-icon="reviews"></span>Reviews<span class="nav-badge">3</span></a>
+          <a href="reports.html"><span class="nav-icon" data-icon="reports"></span>Reports</a>
+          <span class="nav-label">Account</span>
+          <a href="#settings"><span class="nav-icon" data-icon="settings"></span>Settings</a>
+        </nav>
+        <div class="sidebar-note"><div class="sidebar-note-head"><span data-icon="shield"></span> Synthetic workspace</div><p>Only invented demo records are present. No customer data and no production tax conclusion.</p></div>
+        <div class="sidebar-bottom">
+          <div class="user-row"><span class="user-avatar">FD</span><span class="user-copy"><strong>Founder Demo</strong><span>Owner</span></span></div>
+          <div class="locale" aria-label="Interface language"><a class="active" href="reconciliation.html" aria-current="true">EN</a><a href="reconciliation-ar.html" lang="ar" dir="rtl">العربية</a></div>
+        </div>
+      </aside>
+
+      <div class="workspace">
+        <div class="mobile-head">
+          <a class="brand" href="dashboard.html"><span class="brandmark">TP</span><span class="brand-copy"><span class="brand-name">TaxPilot</span></span></a>
+          <div class="mobile-head-actions"><span class="badge badge-synthetic">Synthetic</span><span class="mobile-icon-btn" data-icon="menu"></span><span class="user-avatar">FD</span></div>
+        </div>
+
+        <header class="utility">
+          <div class="utility-left"><span class="crumbs"><a href="reconciliation.html">Reviews</a> · <strong>Founder Synthetic Client</strong> · 2026</span></div>
+          <div class="utility-right"><span class="connection"><i></i> Local API connected</span><button class="command" type="button"><span data-icon="search"></span> Jump to a finding <kbd>⌘ K</kbd></button></div>
+        </header>
+
+        <main class="content">
+          <div class="page-head">
+            <div class="page-head-copy">
+              <div class="page-meta"><span>Reconciliation workspace</span><span class="dot"></span><span class="num">2026-01-01 — 2026-12-31</span><span class="dot"></span><span class="badge badge-synthetic">Synthetic scenario</span></div>
+              <h1>Founder Synthetic Client</h1>
+              <p class="page-description">Run the deterministic synthetic scenario, read the currency-level result, and keep the difference and coverage evidence in one context.</p>
+            </div>
+            <div class="page-actions">
+              <a class="btn btn-secondary" href="clients.html"><span data-icon="arrow"></span> Back to client</a>
+              <a class="btn btn-primary" href="reports.html"><span data-icon="download"></span> Export report</a>
+            </div>
+          </div>
+
+          <section class="workspace-context" aria-label="Engagement context">
+            <span class="context-avatar">FS</span>
+            <div class="context-copy"><strong>Founder Synthetic Client</strong><span>Sales ↔ GL reconciliation · engagement <span class="num">b57b9d4a</span></span></div>
+            <div class="context-periods">
+              <div class="context-period"><span>Engagement period</span><strong>2026-01-01 — 2026-12-31</strong></div>
+              <div class="context-period"><span>Scenario period</span><strong>2026-01-01 — 2026-12-31</strong></div>
+            </div>
+            <div class="context-badges"><span class="badge badge-neutral"><span class="badge-dot"></span>Draft</span><span class="badge badge-warning">Synthetic only</span></div>
+          </section>
+
+          <div class="run-bar">
+            <div class="run-scenario">
+              <label for="scenario">Synthetic scenario</label>
+              <select class="run-select" id="scenario">
+                <option>Sales register vs general ledger (JOD + USD)</option>
+                <option>Sales register vs general ledger (small JOD variance)</option>
+              </select>
+            </div>
+            <div class="run-meta"><span class="badge badge-success"><span class="badge-dot"></span>Run available</span><span class="num">synthetic-sales-gl-v1</span><span>Rules v1</span><span>Jurisdiction JO</span></div>
+          </div>
+
+          <div class="synthetic-strip" role="note"><span data-icon="alert"></span><strong>SYNTHETIC DEMO DATA — NOT CUSTOMER RECORDS / NOT A TAX FILING</strong><span>All figures and evidence rows on this screen come from a built-in scenario, not the client's records.</span></div>
+
+          <div class="workflow-strip" aria-label="Review workflow">
+            <div class="workflow-step done"><span class="step-num">1</span><span class="step-label">Engagement</span></div>
+            <div class="workflow-step done"><span class="step-num">2</span><span class="step-label">Run scenario</span></div>
+            <div class="workflow-step active"><span class="step-num">3</span><span class="step-label">Reconcile</span></div>
+            <div class="workflow-step"><span class="step-num">4</span><span class="step-label">Findings</span></div>
+            <div class="workflow-step"><span class="step-num">5</span><span class="step-label">Report</span></div>
+          </div>
+
+          <nav class="tabs" aria-label="Review workspace sections">
+            <a href="#documents">Documents</a>
+            <a href="#mapping">Mapping</a>
+            <a class="active" href="reconciliation.html" aria-current="page">Reconciliation</a>
+            <a href="findings.html">Findings <span class="count">5</span></a>
+            <a href="reports.html">Reports</a>
+          </nav>
+
+          <div class="recon-layout">
+            <div class="recon-main">
+              <section class="panel result-panel">
+                <div class="result-head">
+                  <div>
+                    <div class="page-meta"><span>Result summary</span><span class="dot"></span><span>Run is ready</span></div>
+                    <h2>Review required</h2>
+                    <p>1 currency differs beyond tolerance: JOD. Coverage is incomplete for USD, so no conclusion is stated for that currency.</p>
+                  </div>
+                  <div class="context-badges" style="justify-content: flex-end">
+                    <span class="badge badge-danger">JOD difference</span>
+                    <span class="badge badge-coverage">USD incomplete</span>
+                  </div>
+                </div>
+                <div class="result-stats">
+                  <div class="result-stat"><span>Findings</span><strong>5</strong></div>
+                  <div class="result-stat"><span>Review required</span><strong class="danger">3</strong></div>
+                  <div class="result-stat"><span>Informational</span><strong>2</strong></div>
+                  <div class="result-stat"><span>No conclusion</span><strong class="coverage">1</strong></div>
+                </div>
+
+                <div class="comparison">
+                  <div class="comparison-label"><h3>JOD currency comparison</h3><span>Aggregate period · NET · tolerance 0</span></div>
+                  <div class="compare-grid">
+                    <div class="total-block">
+                      <div class="source"><span data-icon="book"></span> Sales register</div>
+                      <div class="amount">3,500.000 <span>JOD</span></div>
+                      <div class="basis">Sales-register NET measure, in-scope rows</div>
+                    </div>
+                    <div class="delta-block">
+                      <span class="delta-label">Difference</span>
+                      <span class="delta-value">100.000</span>
+                      <span class="delta-note">Sales exceeds GL<br />exact, beyond 0 tolerance</span>
+                    </div>
+                    <div class="total-block">
+                      <div class="source"><span data-icon="book"></span> General ledger</div>
+                      <div class="amount">3,400.000 <span>JOD</span></div>
+                      <div class="basis">Account 4100 · credit-positive convention</div>
+                    </div>
+                  </div>
+
+                  <div class="coverage-block" aria-label="USD coverage result">
+                    <div class="coverage-head"><span data-icon="alert"></span> USD — coverage incomplete, no totals or verdict</div>
+                    <p>Duplicate sales rows could not be resolved automatically. The design deliberately avoids presenting a USD comparison, because the source evidence is incomplete.</p>
+                    <div class="coverage-facts">
+                      <div><span>Coverage scope</span><strong>USD only</strong></div>
+                      <div><span>Reason</span><strong>COVERAGE_DUPLICATE</strong></div>
+                    </div>
+                  </div>
+
+                  <div class="method-strip">
+                    <span class="method-label">Method</span>
+                    <span class="method-chip">AGGREGATE_PERIOD</span>
+                    <span class="method-chip">NET</span>
+                    <span class="method-chip">CREDIT_POSITIVE</span>
+                    <span class="method-chip">scope 4100</span>
+                    <span class="method-chip">tolerance 0</span>
+                    <details class="method-details"><summary>Method details</summary></details>
+                  </div>
+                  <details class="method-panel">
+                    <summary class="sr-only">Comparison method metadata</summary>
+                    <dl>
+                      <div><dt>Policy</dt><dd>DEMO-GL-POL-1 · v1</dd></div>
+                      <div><dt>Rules version</dt><dd>1</dd></div>
+                      <div><dt>Currency scope</dt><dd>JOD, USD</dd></div>
+                      <div><dt>Authority</dt><dd>synthetic-demo-only</dd></div>
+                    </dl>
+                  </details>
+
+                  <div class="method-strip" style="border-top: 0; margin-top: 6px; padding-top: 0">
+                    <span class="context-note"><span data-icon="clock"></span> Scenario comparison period: <span class="num">2026-01-01 — 2026-12-31</span></span>
+                    <span class="context-note" style="margin-inline-start: auto"><span data-icon="shield"></span> Engagement period is shown separately above.</span>
+                  </div>
+                </div>
+              </section>
+
+              <section class="panel">
+                <div class="panel-head"><div><h2>Currency results</h2><p>Only currencies with a usable conclusion or an explicit coverage state are shown.</p></div></div>
+                <div class="queue-scroll">
+                  <table class="data-table">
+                    <thead><tr><th>Currency</th><th class="right">Sales total</th><th class="right">GL total</th><th class="right">Delta</th><th class="right">Tolerance</th><th>Outcome</th></tr></thead>
+                    <tbody>
+                      <tr><td class="num">JOD</td><td class="right num">3,500.000</td><td class="right num">3,400.000</td><td class="right num" style="color: var(--danger); font-weight: 600">100.000</td><td class="right num">0</td><td><span class="badge badge-danger">Difference beyond tolerance</span></td></tr>
+                      <tr><td class="num">USD</td><td class="right num">—</td><td class="right num">—</td><td class="right num">—</td><td class="right num">0</td><td><span class="badge badge-coverage">Coverage incomplete</span></td></tr>
+                    </tbody>
+                  </table>
+                </div>
+                <p class="finding-footnote">USD totals are intentionally blank. The affected currency has no conclusive comparison, so no derived total is displayed as if it were a result.</p>
+              </section>
+
+              <section class="panel">
+                <div class="panel-head"><div><h2>What to check next</h2><p>Engine guidance, kept separate from the evidence and from any approval state.</p></div></div>
+                <div class="next-checks">
+                  <div class="next-check"><span class="next-check-num">01</span><div><strong>Review the in-scope GL postings and JOD sales rows</strong><span>Confirm the 100.000 difference against the source registers for this currency and period.</span></div></div>
+                  <div class="next-check"><span class="next-check-num">02</span><div><strong>Resolve the duplicated USD sales rows</strong><span>Establish whether rows 6 and 7 are repeated exports or distinct records, then re-run.</span></div></div>
+                  <div class="next-check"><span class="next-check-num">03</span><div><strong>Do not rely on equal totals as proof of completeness</strong><span>Rows can be missing, duplicated, or outside the period. Confirm coverage before relying on this result.</span></div></div>
+                </div>
+                <div class="recon-callout" style="margin-top: 12px"><span data-icon="alert"></span><div><strong>Equal totals are not proof of completeness</strong><p>This synthetic result is a conditional domain calculation, not production tax authority.</p></div></div>
+              </section>
+            </div>
+
+            <aside class="recon-side">
+              <section class="side-panel">
+                <h3>Run context</h3>
+                <dl class="meta-list">
+                  <div class="meta-row"><dt>Fixture</dt><dd>synthetic-sales-gl-v1</dd></div>
+                  <div class="meta-row"><dt>Policy</dt><dd>DEMO-GL-POL-1 · v1</dd></div>
+                  <div class="meta-row"><dt>Rules</dt><dd>v1 · JO</dd></div>
+                  <div class="meta-row"><dt>Basis</dt><dd>AGGREGATE_PERIOD</dd></div>
+                  <div class="meta-row"><dt>Measure</dt><dd>NET</dd></div>
+                  <div class="meta-row"><dt>Account scope</dt><dd>4100</dd></div>
+                  <div class="meta-row"><dt>Tolerance</dt><dd>0</dd></div>
+                  <div class="meta-row"><dt>Currencies</dt><dd>JOD · USD</dd></div>
+                </dl>
+                <p class="run-note">The scenario period is fixed by the fixture. The engagement period is shown separately and is not rewritten by this run.</p>
+              </section>
+
+              <section class="side-panel">
+                <h3>Run identity</h3>
+                <div class="fingerprint"><span>Reconciliation fingerprint</span><code>89dbedf9108cb00fa26a92c88d3f00b51acc10db18afb25d46067810ffa34302</code></div>
+                <div class="fingerprint"><span>Findings fingerprint</span><code>4798d515f0ca2cf9c03c44504328d85f57b09626367e90ea33fc12836e0b760b</code></div>
+                <p class="run-note">Exports are bound to the displayed run. If the run changes, a stale download is rejected.</p>
+              </section>
+
+              <section class="side-panel">
+                <h3>Report handoff</h3>
+                <p class="run-note" style="margin-top: 0">The report carries the conclusion, currency outcomes, coverage notes, ordered findings, evidence references, and both periods.</p>
+                <a class="btn btn-primary" href="reports.html" style="width: 100%; margin-top: 9px"><span data-icon="document"></span> Review report package</a>
+                <a class="btn btn-secondary" href="findings.html" style="width: 100%; margin-top: 7px">Inspect 5 findings</a>
+                <p class="run-note">PDF and XLSX exports are English-only and carry the synthetic label.</p>
+              </section>
+            </aside>
+          </div>
+
+          <div class="screen-footer-note"><span data-icon="shield"></span><span>Design proposal only. Result values, fingerprints, and evidence references match the local synthetic run; this is not the running application.</span></div>
+        </main>
+      </div>
+    </div>
+
+    <nav class="mobile-nav" aria-label="Mobile navigation">
+      <a href="dashboard.html"><span class="nav-icon" data-icon="dashboard"></span>Home</a>
+      <a href="clients.html"><span class="nav-icon" data-icon="clients"></span>Clients</a>
+      <a href="reconciliation.html" aria-current="page"><span class="nav-icon" data-icon="reviews"></span>Reviews</a>
+      <a href="reports.html"><span class="nav-icon" data-icon="reports"></span>Reports</a>
+      <a href="#settings"><span class="nav-icon" data-icon="settings"></span>Settings</a>
+    </nav>
+    <script src="../assets/icons.js"></script>
+  </body>
+</html>

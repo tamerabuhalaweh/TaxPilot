@@ -5,6 +5,8 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { Button } from "../../../components/Button";
 import { Alert } from "../../../components/Alert";
+import { Icon } from "../../../components/Icon";
+import { PageHeader } from "../../../components/PageHeader";
 import { DemoBanner } from "../../../components/Preview";
 import { useLocale } from "../../../components/LocaleProvider";
 import { LocaleControls } from "../../../components/LocaleControls";
@@ -92,9 +94,9 @@ export default function NewReviewPage() {
   }
 
   const sources = [
-    { title: t(locale, "review.sourceSales"), hint: t(locale, "review.sourceSalesHint") },
-    { title: t(locale, "review.sourceJofotara"), hint: t(locale, "review.sourceJofotaraHint") },
-    { title: t(locale, "review.sourceGL"), hint: t(locale, "review.sourceGLHint") }
+    { title: t(locale, "review.sourceSales"), hint: t(locale, "review.sourceSalesHint"), icon: "document" as const },
+    { title: t(locale, "review.sourceJofotara"), hint: t(locale, "review.sourceJofotaraHint"), icon: "file" as const },
+    { title: t(locale, "review.sourceGL"), hint: t(locale, "review.sourceGLHint"), icon: "shield" as const }
   ];
 
   return (
@@ -107,68 +109,97 @@ export default function NewReviewPage() {
         <LocaleControls locale={locale} onChange={setLocale} />
       </div>
       <DemoBanner locale={locale} />
-      <h1>{t(locale, "review.newTitle")}</h1>
-      <div className="tp-grid-2">
-        <div className="tp-field">
-          <label htmlFor="nr-client">{t(locale, "review.selectClient")}</label>
-          <select id="nr-client" value={clientId} onChange={(e) => setClientId(e.target.value)}>
-            {clients.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.name}
-              </option>
+      <PageHeader
+        title={t(locale, "review.newTitle")}
+        description={t(locale, "review.newHint")}
+        back={{
+          href: "/reviews",
+          label: t(locale, "nav.reviews"),
+          ariaLabel: t(locale, "common.backToReviews")
+        }}
+      />
+
+      <div className="tp-content-grid">
+        <section className="tp-panel">
+          <div className="tp-panel-head">
+            <h2>{t(locale, "review.newDetails")}</h2>
+          </div>
+          <div className="tp-grid-2">
+            <div className="tp-field">
+              <label htmlFor="nr-client">{t(locale, "review.selectClient")}</label>
+              <select id="nr-client" value={clientId} onChange={(e) => setClientId(e.target.value)}>
+                {clients.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="tp-field">
+              <label htmlFor="nr-type">{t(locale, "review.reviewType")}</label>
+              <select id="nr-type" value={reviewType} onChange={(e) => setReviewType(e.target.value)}>
+                <option value="SALES_GL">{t(locale, "review.typeSalesGl")}</option>
+                <option value="JOFO">{t(locale, "review.typeJofotara")}</option>
+              </select>
+            </div>
+            <div className="tp-field">
+              <label htmlFor="nr-start">{t(locale, "review.periodStart")}</label>
+              <input
+                id="nr-start"
+                type="date"
+                required={!demo}
+                value={start}
+                onChange={(e) => setStart(e.target.value)}
+              />
+            </div>
+            <div className="tp-field">
+              <label htmlFor="nr-end">{t(locale, "review.periodEnd")}</label>
+              <input
+                id="nr-end"
+                type="date"
+                required={!demo}
+                value={end}
+                onChange={(e) => setEnd(e.target.value)}
+              />
+            </div>
+          </div>
+          {error ? <Alert message={error} /> : null}
+          <div className="tp-inline-actions">
+            <Button
+              type="button"
+              onClick={startReview}
+              disabled={demo || submitting || !clientId || !start || !end || periodInvalid}
+              title={demo ? t(locale, "review.notAvailable") : undefined}
+            >
+              {submitting ? t(locale, "review.starting") : t(locale, "review.start")}
+            </Button>
+          </div>
+          <p className="tp-muted">{demo ? t(locale, "review.notAvailable") : t(locale, "review.startHint")}</p>
+        </section>
+
+        <aside className="tp-panel">
+          <div className="tp-panel-head">
+            <div>
+              <h2>{t(locale, "workspace.documents")}</h2>
+              <p className="tp-muted">{t(locale, "review.sourcesDisabled")}</p>
+            </div>
+          </div>
+          <div className="tp-source-stack">
+            {sources.map((s) => (
+              <div key={s.title} className="tp-card tp-source-card">
+                <div className="tp-source-head">
+                  <span className="tp-source-icon">
+                    <Icon name={s.icon} size={18} />
+                  </span>
+                  <h3>{s.title}</h3>
+                  <StatusPill label={t(locale, "preview.only")} tone="warning" />
+                </div>
+                <p className="tp-muted">{s.hint}</p>
+              </div>
             ))}
-          </select>
-        </div>
-        <div className="tp-field">
-          <label htmlFor="nr-type">{t(locale, "review.reviewType")}</label>
-          <select id="nr-type" value={reviewType} onChange={(e) => setReviewType(e.target.value)}>
-            <option value="SALES_GL">{t(locale, "review.typeSalesGl")}</option>
-            <option value="JOFO">{t(locale, "review.typeJofotara")}</option>
-          </select>
-        </div>
-        <div className="tp-field">
-          <label htmlFor="nr-start">{t(locale, "review.periodStart")}</label>
-          <input
-            id="nr-start"
-            type="date"
-            required={!demo}
-            value={start}
-            onChange={(e) => setStart(e.target.value)}
-          />
-        </div>
-        <div className="tp-field">
-          <label htmlFor="nr-end">{t(locale, "review.periodEnd")}</label>
-          <input
-            id="nr-end"
-            type="date"
-            required={!demo}
-            value={end}
-            onChange={(e) => setEnd(e.target.value)}
-          />
-        </div>
+          </div>
+        </aside>
       </div>
-      {error ? <Alert message={error} /> : null}
-      <h2>{t(locale, "workspace.documents")}</h2>
-      <p className="tp-muted">{t(locale, "review.sourcesDisabled")}</p>
-      {sources.map((s) => (
-        <div key={s.title} className="tp-card tp-source-card">
-          <h3>
-            {s.title} <StatusPill label={t(locale, "preview.only")} />
-          </h3>
-          <p className="tp-muted">{s.hint}</p>
-        </div>
-      ))}
-      <div className="tp-actions">
-        <Button
-          type="button"
-          onClick={startReview}
-          disabled={demo || submitting || !clientId || !start || !end || periodInvalid}
-          title={demo ? t(locale, "review.notAvailable") : undefined}
-        >
-          {submitting ? t(locale, "review.starting") : t(locale, "review.start")}
-        </Button>
-      </div>
-      <p className="tp-muted">{demo ? t(locale, "review.notAvailable") : t(locale, "review.startHint")}</p>
     </main>
   );
 }

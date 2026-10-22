@@ -1,0 +1,349 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TaxPilot design proposal — Dashboard</title>
+    <link rel="stylesheet" href="../assets/app.css" />
+  </head>
+  <body>
+    <div class="design-flag"><strong>Design proposal v2</strong> · Dashboard · 1440 / 390 · not the running app</div>
+    <div class="app">
+      <aside class="sidebar">
+        <a class="brand" href="dashboard.html" aria-label="TaxPilot design home">
+          <span class="brandmark">TP</span>
+          <span class="brand-copy">
+            <span class="brand-name">TaxPilot</span>
+            <span class="brand-sub">Reconciliation workspace</span>
+          </span>
+        </a>
+
+        <div class="workspace-switch">
+          <span class="workspace-avatar">FS</span>
+          <span class="workspace-copy">
+            <span>Workspace</span>
+            <strong>Founder workspace</strong>
+          </span>
+          <span class="workspace-chevron" data-icon="chevron"></span>
+        </div>
+
+        <nav class="nav" aria-label="Primary navigation">
+          <span class="nav-label">Workspace</span>
+          <a href="dashboard.html" aria-current="page">
+            <span class="nav-icon" data-icon="dashboard"></span>
+            Dashboard
+          </a>
+          <a href="clients.html">
+            <span class="nav-icon" data-icon="clients"></span>
+            Clients
+          </a>
+          <a href="reconciliation.html">
+            <span class="nav-icon" data-icon="reviews"></span>
+            Reviews
+            <span class="nav-badge">3</span>
+          </a>
+          <a href="reports.html">
+            <span class="nav-icon" data-icon="reports"></span>
+            Reports
+          </a>
+          <span class="nav-label">Account</span>
+          <a href="#settings">
+            <span class="nav-icon" data-icon="settings"></span>
+            Settings
+          </a>
+        </nav>
+
+        <div class="sidebar-note">
+          <div class="sidebar-note-head"><span data-icon="shield"></span> Synthetic workspace</div>
+          <p>Only invented demo records are present. No customer data and no production tax conclusion.</p>
+        </div>
+
+        <div class="sidebar-bottom">
+          <div class="user-row">
+            <span class="user-avatar">FD</span>
+            <span class="user-copy">
+              <strong>Founder Demo</strong>
+              <span>Owner</span>
+            </span>
+          </div>
+          <div class="locale" aria-label="Interface language">
+            <a class="active" href="dashboard.html" aria-current="true">EN</a>
+            <a href="reconciliation-ar.html" lang="ar" dir="rtl">العربية</a>
+          </div>
+        </div>
+      </aside>
+
+      <div class="workspace">
+        <div class="mobile-head">
+          <a class="brand" href="dashboard.html">
+            <span class="brandmark">TP</span>
+            <span class="brand-copy"><span class="brand-name">TaxPilot</span></span>
+          </a>
+          <div class="mobile-head-actions">
+            <span class="badge badge-synthetic">Synthetic</span>
+            <span class="mobile-icon-btn" data-icon="search"></span>
+            <span class="user-avatar">FD</span>
+          </div>
+        </div>
+
+        <header class="utility">
+          <div class="utility-left">
+            <span class="crumbs"><strong>Founder workspace</strong> · Dashboard</span>
+          </div>
+          <div class="utility-right">
+            <span class="connection"><i></i> Local API connected</span>
+            <button class="command" type="button">
+              <span data-icon="search"></span>
+              Jump to a client or review
+              <kbd>⌘ K</kbd>
+            </button>
+          </div>
+        </header>
+
+        <main class="content">
+          <div class="page-head">
+            <div class="page-head-copy">
+              <div class="page-meta">
+                <span>Operations overview</span><span class="dot"></span><span>22 October 2026</span><span class="dot"></span><span class="badge badge-synthetic">Synthetic data</span>
+              </div>
+              <h1>Review operations</h1>
+              <p class="page-description">A calm view of the review queue, client book, and the work that needs attention. Counts are derived from stored workspace records; no financial totals are inferred here.</p>
+            </div>
+            <div class="page-actions">
+              <button class="btn btn-secondary" type="button"><span data-icon="plus"></span> New client</button>
+              <a class="btn btn-primary" href="clients.html"><span data-icon="plus"></span> New review</a>
+            </div>
+          </div>
+
+          <div class="dashboard-intro">
+            <section class="intro-copy">
+              <span class="page-kicker">Today’s operations</span>
+              <h2>Three draft reviews, one client, and no completed work yet.</h2>
+              <p>The workspace is intentionally small and synthetic. The dashboard should become more useful as history accumulates, so sparse states are explicit rather than filled with invented trends.</p>
+              <div class="intro-list">
+                <div>
+                  <span>Oldest open review</span>
+                  <strong>1 day old · 2026 period</strong>
+                </div>
+                <div>
+                  <span>Latest activity</span>
+                  <strong>Review created at 10:25 UTC</strong>
+                </div>
+                <div>
+                  <span>Operational focus</span>
+                  <strong>Open the queue and run the scenario</strong>
+                </div>
+              </div>
+            </section>
+            <aside class="attention-card">
+              <div class="attention-head"><span data-icon="clock"></span> Needs attention</div>
+              <strong>3 open reviews</strong>
+              <p>All three engagements are still <span class="strong">Draft</span>. No review has run to completion, so no completion or approval rate is shown.</p>
+              <a class="attention-link" href="reconciliation.html">Open the review queue <span data-icon="arrow"></span></a>
+            </aside>
+          </div>
+
+          <section class="kpi-grid" aria-label="Workspace counts">
+            <div class="kpi kpi-featured">
+              <div class="kpi-top">
+                <span class="icon-tile"><span data-icon="clients"></span></span>
+                <span class="kpi-label">Active clients</span>
+              </div>
+              <div class="kpi-value">1</div>
+              <div class="kpi-foot"><span>Founder Synthetic Client</span><a href="clients.html">View client</a></div>
+            </div>
+            <div class="kpi">
+              <div class="kpi-top">
+                <span class="icon-tile neutral"><span data-icon="reviews"></span></span>
+                <span class="kpi-label">Reviews</span>
+              </div>
+              <div class="kpi-value">3</div>
+              <div class="kpi-foot"><span>2024, 2025, 2026</span><span>Sales ↔ GL</span></div>
+            </div>
+            <div class="kpi">
+              <div class="kpi-top">
+                <span class="icon-tile warning"><span data-icon="clock"></span></span>
+                <span class="kpi-label">Open reviews</span>
+              </div>
+              <div class="kpi-value">3</div>
+              <div class="kpi-foot"><span>100% of the book</span><span>All draft</span></div>
+            </div>
+            <div class="kpi">
+              <div class="kpi-top">
+                <span class="icon-tile info"><span data-icon="check"></span></span>
+                <span class="kpi-label">Completed</span>
+              </div>
+              <div class="kpi-value">0</div>
+              <div class="kpi-foot"><span>No completed history</span><span>Empty state</span></div>
+            </div>
+          </section>
+
+          <div class="dash-analytics">
+            <section class="panel">
+              <div class="panel-head">
+                <div>
+                  <h2>Review volume by engagement period</h2>
+                  <p>One stored review per period. No inferred trend line.</p>
+                </div>
+                <span class="badge badge-neutral">3 records</span>
+              </div>
+              <div class="chart" role="img" aria-label="Bar chart: zero reviews for 2023, one for 2024, one for 2025, and one for 2026.">
+                <div class="chart-grid"><i></i><i></i><i></i><i></i></div>
+                <div class="chart-y"><span>3</span><span>2</span><span>1</span><span>0</span></div>
+                <div class="chart-bars cols-4">
+                  <div class="bar-col"><span class="bar-value">0</span><span class="bar bar-empty" style="height: 3px"></span><span class="bar-label">2023</span></div>
+                  <div class="bar-col"><span class="bar-value">1</span><span class="bar" style="height: 48px"></span><span class="bar-label">2024</span></div>
+                  <div class="bar-col"><span class="bar-value">1</span><span class="bar" style="height: 48px"></span><span class="bar-label">2025</span></div>
+                  <div class="bar-col"><span class="bar-value">1</span><span class="bar" style="height: 48px"></span><span class="bar-label">2026</span></div>
+                </div>
+              </div>
+              <div class="chart-caption-row">
+                <span class="legend-inline"><i></i> Draft review records</span>
+                <span>Zero is shown as an empty column.</span>
+              </div>
+              <div class="chart-note"><span data-icon="shield"></span><span>All three reviews were created on 21 October 2026. A historical activity chart will become meaningful after more review cycles exist.</span></div>
+              <details class="chart-details">
+                <summary>View the same data as a table</summary>
+                <table class="data-table" style="margin-top: 7px">
+                  <thead><tr><th>Period</th><th class="right">Reviews</th><th>Status</th></tr></thead>
+                  <tbody>
+                    <tr><td>2024</td><td class="right num">1</td><td>Draft</td></tr>
+                    <tr><td>2025</td><td class="right num">1</td><td>Draft</td></tr>
+                    <tr><td>2026</td><td class="right num">1</td><td>Draft</td></tr>
+                  </tbody>
+                </table>
+              </details>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head">
+                <div>
+                  <h2>Review status</h2>
+                  <p>Current state of the three stored reviews.</p>
+                </div>
+              </div>
+              <div class="status-dist">
+                <div class="dist-track" aria-label="Draft 100 percent, in progress 0 percent, closed 0 percent">
+                  <span class="dist-draft" style="width: 100%"></span>
+                  <span class="dist-active" style="width: 0"></span>
+                  <span class="dist-closed" style="width: 0"></span>
+                </div>
+                <div class="dist-rows">
+                  <div class="dist-row"><i class="dist-draft"></i><span>Draft</span><strong>3</strong></div>
+                  <div class="dist-row"><i class="dist-active"></i><span>In progress</span><strong>0</strong></div>
+                  <div class="dist-row"><i class="dist-closed"></i><span>Closed</span><strong>0</strong></div>
+                </div>
+                <p class="dist-caption">The review workflow has not advanced past Draft in this workspace. No approval rate is implied.</p>
+              </div>
+              <div class="review-state-line"><span class="badge badge-warning">Action needed</span><span>Open a review to run the synthetic scenario.</span></div>
+              <div style="margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line)">
+                <div class="kpi-label" style="margin-bottom: 4px">Latest operational event</div>
+                <div class="small strong">2024 review created</div>
+                <div class="tiny muted">21 Oct 2026 · 10:25 UTC</div>
+                <div class="dist-caption" style="margin-top: 9px">No completion or approval rate is shown because the workspace has no completed review history.</div>
+              </div>
+            </section>
+          </div>
+
+          <section class="panel queue">
+            <div class="panel-head">
+              <div>
+                <h2>Review queue</h2>
+                <p>Operational ordering by status and age. No invented risk score.</p>
+              </div>
+              <a class="panel-link" href="clients.html">View client book <span data-icon="arrow"></span></a>
+            </div>
+            <div class="queue-scroll">
+              <table class="queue-table">
+                <thead>
+                  <tr><th>Client</th><th>Period</th><th>Review</th><th>Status</th><th>Age</th><th></th></tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td><div class="queue-client"><span class="queue-avatar">FS</span><span><strong>Founder Synthetic Client</strong><span>No sector recorded</span></span></div></td>
+                    <td class="period">2026</td><td class="type">Sales ↔ GL</td><td><span class="badge badge-neutral"><span class="badge-dot"></span>Draft</span></td><td><span class="age-badge">1 day</span></td>
+                    <td class="queue-actions"><a href="reconciliation.html">Open workspace <span data-icon="arrow"></span></a></td>
+                  </tr>
+                  <tr>
+                    <td><div class="queue-client"><span class="queue-avatar">FS</span><span><strong>Founder Synthetic Client</strong><span>No sector recorded</span></span></div></td>
+                    <td class="period">2025</td><td class="type">Sales ↔ GL</td><td><span class="badge badge-neutral"><span class="badge-dot"></span>Draft</span></td><td><span class="age-badge">1 day</span></td>
+                    <td class="queue-actions"><a href="reconciliation.html">Open workspace <span data-icon="arrow"></span></a></td>
+                  </tr>
+                  <tr>
+                    <td><div class="queue-client"><span class="queue-avatar">FS</span><span><strong>Founder Synthetic Client</strong><span>No sector recorded</span></span></div></td>
+                    <td class="period">2024</td><td class="type">Sales ↔ GL</td><td><span class="badge badge-neutral"><span class="badge-dot"></span>Draft</span></td><td><span class="age-badge">1 day</span></td>
+                    <td class="queue-actions"><a href="reconciliation.html">Open workspace <span data-icon="arrow"></span></a></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <div class="dash-bottom">
+            <section class="panel">
+              <div class="panel-head">
+                <div>
+                  <h2>Recent activity</h2>
+                  <p>Stored review records, newest first.</p>
+                </div>
+              </div>
+              <div class="timeline">
+                <div class="timeline-row">
+                  <span class="timeline-dot"><span data-icon="plus"></span></span>
+                  <span class="timeline-copy"><strong>2024 review created</strong><span>Founder Synthetic Client · Sales ↔ GL</span></span>
+                  <span class="timeline-time">21 Oct · 10:25</span>
+                </div>
+                <div class="timeline-row">
+                  <span class="timeline-dot"><span data-icon="plus"></span></span>
+                  <span class="timeline-copy"><strong>2025 review created</strong><span>Founder Synthetic Client · Sales ↔ GL</span></span>
+                  <span class="timeline-time">21 Oct · 10:20</span>
+                </div>
+                <div class="timeline-row">
+                  <span class="timeline-dot"><span data-icon="plus"></span></span>
+                  <span class="timeline-copy"><strong>2026 review created</strong><span>Founder Synthetic Client · Sales ↔ GL</span></span>
+                  <span class="timeline-time">21 Oct · 10:13</span>
+                </div>
+              </div>
+              <p class="finding-footnote">No persisted runs, findings, approvals, or exports appear in the workspace API yet. The design does not invent them.</p>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head">
+                <div>
+                  <h2>Client book</h2>
+                  <p>Active clients in this workspace.</p>
+                </div>
+                <a class="panel-link" href="clients.html">All clients <span data-icon="arrow"></span></a>
+              </div>
+              <div class="client-book">
+                <span class="client-book-avatar">FS</span>
+                <div class="client-book-copy">
+                  <strong>Founder Synthetic Client</strong>
+                  <span>Active · sector not recorded</span>
+                </div>
+                <div class="client-book-stat">3<small>reviews</small></div>
+              </div>
+              <div class="client-summary-strip">
+                <div><span>Open</span><strong>3 reviews</strong></div>
+                <div><span>Completed</span><strong>0 reviews</strong></div>
+                <div><span>Latest</span><strong>2026 period</strong></div>
+              </div>
+              <p class="finding-footnote">The client record stores a name and active status only. Missing profile fields are shown as missing, not filled with plausible data.</p>
+            </section>
+          </div>
+
+          <div class="screen-footer-note"><span data-icon="shield"></span><span>Design proposal only. Figures are from the local synthetic workspace and scenario run; no production data or financial advice is represented.</span></div>
+        </main>
+      </div>
+    </div>
+
+    <nav class="mobile-nav" aria-label="Mobile navigation">
+      <a href="dashboard.html" aria-current="page"><span class="nav-icon" data-icon="dashboard"></span>Home</a>
+      <a href="clients.html"><span class="nav-icon" data-icon="clients"></span>Clients</a>
+      <a href="reconciliation.html"><span class="nav-icon" data-icon="reviews"></span>Reviews</a>
+      <a href="reports.html"><span class="nav-icon" data-icon="reports"></span>Reports</a>
+      <a href="#settings"><span class="nav-icon" data-icon="settings"></span>Settings</a>
+    </nav>
+    <script src="../assets/icons.js"></script>
+  </body>
+</html>

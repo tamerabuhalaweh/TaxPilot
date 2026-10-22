@@ -6,9 +6,12 @@ import { useEffect, useState } from "react";
 import { Alert } from "../../components/Alert";
 import { DemoBanner } from "../../components/Preview";
 import { EmptyState } from "../../components/EmptyState";
+import { Icon } from "../../components/Icon";
+import { PageHeader } from "../../components/PageHeader";
 import { useLocale } from "../../components/LocaleProvider";
 import { LocaleControls } from "../../components/LocaleControls";
 import { Nav } from "../../components/Nav";
+import { StatusPill } from "../../components/StatusPill";
 import {
   ApiRequestError,
   listClients,
@@ -26,6 +29,7 @@ interface ReviewRow {
 }
 
 type LoadState = "loading" | "ready" | "denied" | "error";
+type Tone = "neutral" | "info" | "success" | "warning";
 
 function statusLabel(locale: "en" | "ar", status: string): string {
   return t(locale, `review.status.${status.toLowerCase()}`);
@@ -33,6 +37,21 @@ function statusLabel(locale: "en" | "ar", status: string): string {
 
 function typeLabel(locale: "en" | "ar", reviewType: string): string {
   return reviewType === "JOFO" ? t(locale, "review.typeJofotara") : t(locale, "review.typeSalesGl");
+}
+
+function statusTone(status: string): Tone {
+  switch (status.toLowerCase()) {
+    case "approved":
+    case "closed":
+      return "success";
+    case "in_progress":
+    case "active":
+      return "info";
+    case "ready_for_approval":
+      return "warning";
+    default:
+      return "neutral";
+  }
 }
 
 /** Reviews index: connected workspaces list real engagements; demo builds keep
@@ -72,6 +91,7 @@ export default function ReviewsPage() {
 
   const newReview = (
     <Link href="/reviews/new" className="tp-primary">
+      <Icon name="plus" size={16} />
       {t(locale, "dashboard.newReview")}
     </Link>
   );
@@ -86,84 +106,124 @@ export default function ReviewsPage() {
         <LocaleControls locale={locale} onChange={setLocale} />
       </div>
       <DemoBanner locale={locale} />
-      <h1>{t(locale, "nav.reviews")}</h1>
-      <p className="tp-muted">{t(locale, "reviews.subtitle")}</p>
-      <div className="tp-actions">{newReview}</div>
+      <PageHeader
+        title={t(locale, "nav.reviews")}
+        description={t(locale, "reviews.subtitle")}
+        actions={newReview}
+      />
 
       {state === "loading" ? <p className="tp-muted">{t(locale, "review.loading")}</p> : null}
       {state === "error" ? <Alert message={t(locale, "reviews.loadError")} /> : null}
       {state === "denied" ? (
-        <div className="tp-actions">
-          <EmptyState title={t(locale, "dashboard.signinRequired")} hint={t(locale, "dashboard.signinRequiredHint")} />
-          <Link href="/login" className="tp-primary">
-            {t(locale, "dashboard.signin")}
-          </Link>
-        </div>
+        <EmptyState
+          title={t(locale, "dashboard.signinRequired")}
+          hint={t(locale, "dashboard.signinRequiredHint")}
+          icon="shield"
+          action={
+            <Link href="/login" className="tp-primary">
+              {t(locale, "dashboard.signin")}
+            </Link>
+          }
+        />
       ) : null}
 
       {state === "ready" && demo ? (
-        <div className="tp-table-wrap">
-          <table className="tp-table">
-            <thead>
-              <tr>
-                <th>{t(locale, "clients.name")}</th>
-                <th>{t(locale, "reviews.period")}</th>
-                <th>{t(locale, "reviews.type")}</th>
-                <th>{t(locale, "clients.status")}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {DEMO_REVIEWS.map((review) => (
-                <tr key={review.id}>
-                  <td>{locale === "ar" ? review.clientNameAr : review.clientName}</td>
-                  <td className="tp-num">{review.period}</td>
-                  <td>{locale === "ar" ? review.typeAr : review.type}</td>
-                  <td>{t(locale, `review.status.${review.status}`)}</td>
+        <section className="tp-panel">
+          <div className="tp-panel-head">
+            <h2>{t(locale, "reviews.workspaceList")}</h2>
+          </div>
+          <div className="tp-table-wrap">
+            <table className="tp-table">
+              <thead>
+                <tr>
+                  <th>{t(locale, "clients.name")}</th>
+                  <th>{t(locale, "reviews.period")}</th>
+                  <th>{t(locale, "reviews.type")}</th>
+                  <th>{t(locale, "clients.status")}</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      ) : null}
-      {state === "ready" && demo ? (
-        <p className="tp-muted">{t(locale, "reviews.demoNote")}</p>
+              </thead>
+              <tbody>
+                {DEMO_REVIEWS.map((review) => (
+                  <tr key={review.id}>
+                    <td>
+                      <span className="tp-person-name">
+                        {locale === "ar" ? review.clientNameAr : review.clientName}
+                      </span>
+                    </td>
+                    <td className="tp-num" dir="ltr">
+                      {review.period}
+                    </td>
+                    <td>{locale === "ar" ? review.typeAr : review.type}</td>
+                    <td>
+                      <StatusPill
+                        label={t(locale, `review.status.${review.status}`)}
+                        tone={statusTone(review.status)}
+                      />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="tp-muted tp-panel-note">{t(locale, "reviews.demoNote")}</p>
+        </section>
       ) : null}
 
       {state === "ready" && !demo && rows.length === 0 ? (
-        <EmptyState title={t(locale, "reviews.emptyTitle")} hint={t(locale, "reviews.emptyHint")} />
+        <EmptyState
+          title={t(locale, "reviews.emptyTitle")}
+          hint={t(locale, "reviews.emptyHint")}
+          icon="reviews"
+          action={newReview}
+        />
       ) : null}
 
       {state === "ready" && !demo && rows.length > 0 ? (
-        <div className="tp-table-wrap">
-          <table className="tp-table">
-            <thead>
-              <tr>
-                <th>{t(locale, "clients.name")}</th>
-                <th>{t(locale, "reviews.period")}</th>
-                <th>{t(locale, "reviews.type")}</th>
-                <th>{t(locale, "clients.status")}</th>
-                <th aria-label="actions" />
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map(({ engagement, clientName }) => (
-                <tr key={engagement.id}>
-                  <td>
-                    <Link href={`/clients/${engagement.client_id}`}>{clientName}</Link>
-                  </td>
-                  <td className="tp-num" dir="ltr">
-                    {engagement.period_start} – {engagement.period_end}
-                  </td>
-                  <td>{typeLabel(locale, engagement.review_type)}</td>
-                  <td>{statusLabel(locale, engagement.status)}</td>
-                  <td>
-                    <Link href={`/reviews/${engagement.id}`}>{t(locale, "clients.open")}</Link>
-                  </td>
+        <section className="tp-panel">
+          <div className="tp-panel-head">
+            <h2>{t(locale, "reviews.workspaceList")}</h2>
+          </div>
+          <div className="tp-table-wrap">
+            <table className="tp-table">
+              <thead>
+                <tr>
+                  <th>{t(locale, "clients.name")}</th>
+                  <th>{t(locale, "reviews.period")}</th>
+                  <th>{t(locale, "reviews.type")}</th>
+                  <th>{t(locale, "clients.status")}</th>
+                  <th aria-label="actions" />
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {rows.map(({ engagement, clientName }) => (
+                  <tr key={engagement.id}>
+                    <td>
+                      <Link href={`/clients/${engagement.client_id}`} className="tp-person-name">
+                        {clientName}
+                      </Link>
+                    </td>
+                    <td className="tp-num" dir="ltr">
+                      {engagement.period_start} – {engagement.period_end}
+                    </td>
+                    <td>{typeLabel(locale, engagement.review_type)}</td>
+                    <td>
+                      <StatusPill
+                        label={statusLabel(locale, engagement.status)}
+                        tone={statusTone(engagement.status)}
+                      />
+                    </td>
+                    <td>
+                      <Link href={`/reviews/${engagement.id}`} className="tp-row-link">
+                        {t(locale, "clients.open")}
+                        <Icon name="arrow" size={14} />
+                      </Link>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
       ) : null}
     </main>
   );

@@ -4,13 +4,15 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { Alert } from "../components/Alert";
 import { Button } from "../components/Button";
+import { EmptyState } from "../components/EmptyState";
+import { Icon, type IconName } from "../components/Icon";
 import { DemoBanner } from "../components/Preview";
+import { PageHeader } from "../components/PageHeader";
 import { useLocale } from "../components/LocaleProvider";
 import { LocaleControls } from "../components/LocaleControls";
 import { Nav } from "../components/Nav";
 import { StatCard } from "../components/StatCard";
 import { StatusPill } from "../components/StatusPill";
-import { EmptyState } from "../components/EmptyState";
 import {
   ApiRequestError,
   fetchHealth,
@@ -23,10 +25,37 @@ import {
   type MePayload
 } from "../lib/api";
 import { DEMO_CLIENTS, DEMO_FIRM, DEMO_REVIEWS } from "../lib/demo-data";
-import { t } from "../lib/i18n";
+import { initials } from "../lib/format";
+import { t, type Locale } from "../lib/i18n";
 import { isDemoMode } from "../lib/preview";
 
 type LoadState = "checking" | "down" | "signed-out" | "ready";
+type Tone = "neutral" | "info" | "success" | "warning" | "danger";
+
+interface DashboardStat {
+  label: string;
+  value: string;
+  icon: IconName;
+}
+
+function statusTone(status: string): Tone {
+  switch (status.toLowerCase()) {
+    case "approved":
+    case "closed":
+      return "success";
+    case "in_progress":
+    case "active":
+      return "info";
+    case "ready_for_approval":
+      return "warning";
+    default:
+      return "neutral";
+  }
+}
+
+function statusLabel(locale: Locale, status: string): string {
+  return t(locale, `review.status.${status.toLowerCase()}`);
+}
 
 /** Firm dashboard: navigation, firm overview, clients, and review status. */
 export default function DashboardPage() {
@@ -84,30 +113,34 @@ export default function DashboardPage() {
   const openReviews = engagements.filter((e) => e.status === "DRAFT" || e.status === "ACTIVE").length;
   const closedReviews = engagements.filter((e) => e.status === "CLOSED").length;
   const activeClients = clients.filter((c) => c.status === "active").length;
-  const stats = demo
+
+  const stats: DashboardStat[] = demo
     ? [
-        { label: t(locale, "dashboard.activeReviews"), value: String(activeReviews) },
-        { label: t(locale, "dashboard.awaitingAction"), value: "1" },
-        { label: t(locale, "dashboard.highPriority"), value: "0" },
-        { label: t(locale, "dashboard.recentlyCompleted"), value: String(doneReviews) }
+        { label: t(locale, "dashboard.activeReviews"), value: String(activeReviews), icon: "reviews" },
+        { label: t(locale, "dashboard.awaitingAction"), value: "1", icon: "clock" },
+        { label: t(locale, "dashboard.highPriority"), value: "0", icon: "alert" },
+        { label: t(locale, "dashboard.recentlyCompleted"), value: String(doneReviews), icon: "check" }
       ]
     : [
-        { label: t(locale, "dashboard.clients"), value: String(activeClients) },
-        { label: t(locale, "dashboard.totalReviews"), value: String(engagements.length) },
-        { label: t(locale, "dashboard.openReviews"), value: String(openReviews) },
-        { label: t(locale, "dashboard.completedReviews"), value: String(closedReviews) }
+        { label: t(locale, "dashboard.clients"), value: String(activeClients), icon: "clients" },
+        { label: t(locale, "dashboard.totalReviews"), value: String(engagements.length), icon: "reviews" },
+        { label: t(locale, "dashboard.openReviews"), value: String(openReviews), icon: "clock" },
+        { label: t(locale, "dashboard.completedReviews"), value: String(closedReviews), icon: "check" }
       ];
+
   interface ClientRow {
     id: string;
     name: string;
     detail: string;
     count: string;
   }
+
   const openByClient = new Map<string, number>();
   for (const engagement of engagements) {
     if (engagement.status !== "DRAFT" && engagement.status !== "ACTIVE") continue;
     openByClient.set(engagement.client_id, (openByClient.get(engagement.client_id) ?? 0) + 1);
   }
+
   const shownClients: ClientRow[] = demo
     ? DEMO_CLIENTS.filter((c) => c.status === "active").map((c) => ({
         id: c.id,
@@ -123,10 +156,32 @@ export default function DashboardPage() {
           detail: c.sector ?? "—",
           count: String(openByClient.get(c.id) ?? 0)
         }));
+
   const clientNames = new Map(clients.map((client) => [client.id, client.name]));
-  const recentReviews = [...engagements]
-    .sort((a, b) => b.created_at.localeCompare(a.created_at))
-    .slice(0, 5);
+  const recentReviews = [...engagements].sort((a, b) => b.created_at.localeCompare(a.created_at)).slice(0, 6);
+
+  const demoReviewRows = DEMO_REVIEWS.map((review) => ({
+    id: review.id,
+    clientName: locale === "ar" ? review.clientNameAr : review.clientName,
+    period: review.period,
+    type: locale === "ar" ? review.typeAr : review.type,
+    status: review.status,
+    openable: false
+  }));
+
+  const reviewRows = demo
+    ? demoReviewRows
+    : recentReviews.map((review) => ({
+        id: review.id,
+        clientName: clientNames.get(review.client_id) ?? "—",
+        period: `${review.period_start} — ${review.period_end}`,
+        type:
+          review.review_type === "JOFO"
+            ? t(locale, "review.typeJofotara")
+            : t(locale, "review.typeSalesGl"),
+        status: review.status.toLowerCase(),
+        openable: true
+      }));
 
   return (
     <main>
@@ -138,143 +193,203 @@ export default function DashboardPage() {
         <LocaleControls locale={locale} onChange={setLocale} />
       </div>
       <DemoBanner locale={locale} />
-      <p className="tp-muted">{t(locale, "app.tagline")}</p>
-      <h1>{t(locale, "dashboard.title")}</h1>
+      <PageHeader
+        title={t(locale, "dashboard.title")}
+        description={t(locale, "app.tagline")}
+        actions={
+          <Link href="/reviews/new" className="tp-primary">
+            <Icon name="plus" size={16} />
+            {t(locale, "dashboard.newReview")}
+          </Link>
+        }
+      />
 
-      {state === "checking" && <StatusPill label={t(locale, "health.checking")} />}
+      {state === "checking" && <StatusPill label={t(locale, "health.checking")} tone="neutral" />}
       {state === "down" && <Alert message={t(locale, "health.backendDown")} />}
       {state === "signed-out" && !demo && (
-        <div className="tp-actions">
-          <EmptyState title={t(locale, "dashboard.signinRequired")} hint={t(locale, "dashboard.signinRequiredHint")} />
-          <Link href="/login" className="tp-primary">
-            {t(locale, "dashboard.signin")}
-          </Link>
-        </div>
+        <EmptyState
+          title={t(locale, "dashboard.signinRequired")}
+          hint={t(locale, "dashboard.signinRequiredHint")}
+          icon="shield"
+          action={
+            <Link href="/login" className="tp-primary">
+              {t(locale, "dashboard.signin")}
+            </Link>
+          }
+        />
       )}
 
       {(state === "ready" || (demo && state !== "down")) && (
         <>
-          {firmName ? <h2>{firmName}</h2> : null}
-          <div className="tp-actions">
-            <StatusPill label={demo ? t(locale, "preview.only") : t(locale, "health.backendUp")} />
-            {!demo && me ? <StatusPill label={`${me.email} · ${me.memberships[0]?.role ?? "member"}`} /> : null}
-          </div>
+          <section className="tp-workspace-strip">
+            <div>
+              {firmName ? <h2>{firmName}</h2> : null}
+              <p>{t(locale, "dashboard.workspace")}</p>
+            </div>
+            <div className="tp-actions">
+              <Link href="/clients" className="tp-button tp-button-secondary">
+                <Icon name="clients" size={16} />
+                {t(locale, "dashboard.viewAllClients")}
+              </Link>
+              <Link href="/reviews/new" className="tp-button tp-button-primary">
+                <Icon name="plus" size={16} />
+                {t(locale, "dashboard.newReview")}
+              </Link>
+            </div>
+          </section>
 
           <div className="tp-stats">
-            {stats.map((s) => (
-              <StatCard key={s.label} label={s.label} value={s.value} />
+            {stats.map((stat) => (
+              <StatCard key={stat.label} label={stat.label} value={stat.value} icon={stat.icon} />
             ))}
           </div>
 
-          <h2>{t(locale, "dashboard.clientsOverview")}</h2>
-          {shownClients.length === 0 ? (
-            <EmptyState title={t(locale, "dashboard.clients")} hint={t(locale, "dashboard.noClients")} />
-          ) : (
-            <div className="tp-table-wrap">
-              <table className="tp-table">
-                <thead>
-                  <tr>
-                    <th>{t(locale, "clients.name")}</th>
-                    <th>{t(locale, "clients.sector")}</th>
-                    <th>{t(locale, "dashboard.activeReviews")}</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {shownClients.map((c) => (
-                    <tr key={c.id}>
-                      <td>
-                        <Link href={`/clients/${c.id}`}>{c.name}</Link>
-                      </td>
-                      <td>{c.detail}</td>
-                      <td className="tp-num">{c.count}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-          <div className="tp-actions">
-            <Link href="/clients" className="tp-primary">
-              {t(locale, "dashboard.viewAllClients")}
-            </Link>
-            <Link href="/reviews/new" className="tp-primary">
-              {t(locale, "dashboard.newReview")}
-            </Link>
-            {!demo ? (
-              <Button type="button" onClick={signOut}>
-                {t(locale, "dashboard.signout")}
-              </Button>
-            ) : null}
+          <div className="tp-dashboard-grid">
+            <section className="tp-panel">
+              <div className="tp-panel-head">
+                <h2>{t(locale, "dashboard.clientsOverview")}</h2>
+                <Link href="/clients">{t(locale, "common.viewAll")}</Link>
+              </div>
+              {shownClients.length === 0 ? (
+                <EmptyState
+                  title={t(locale, "dashboard.clients")}
+                  hint={t(locale, "dashboard.noClients")}
+                  icon="clients"
+                />
+              ) : (
+                <div className="tp-table-wrap">
+                  <table className="tp-table">
+                    <thead>
+                      <tr>
+                        <th>{t(locale, "clients.name")}</th>
+                        <th>{t(locale, "clients.sector")}</th>
+                        <th>{t(locale, "dashboard.activeReviews")}</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {shownClients.map((client) => (
+                        <tr key={client.id}>
+                          <td>
+                            <div className="tp-person">
+                              <span className="tp-avatar" aria-hidden="true">
+                                {initials(client.name)}
+                              </span>
+                              <div className="tp-person-copy">
+                                <Link href={`/clients/${client.id}`} className="tp-person-name">
+                                  {client.name}
+                                </Link>
+                                <span className="tp-person-meta">{client.detail}</span>
+                              </div>
+                            </div>
+                          </td>
+                          <td>{client.detail}</td>
+                          <td className="tp-num">{client.count}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </section>
+
+            <aside className="tp-panel">
+              <div className="tp-panel-head">
+                <h2>{t(locale, "dashboard.workspaceStatus")}</h2>
+                <StatusPill
+                  label={demo ? t(locale, "preview.only") : t(locale, "health.backendUp")}
+                  tone={demo ? "warning" : "success"}
+                />
+              </div>
+              <div className="tp-status-list">
+                <div className="tp-status-item">
+                  <span className="tp-status-label">{t(locale, "dashboard.workspace")}</span>
+                  <span className="tp-status-value">{firmName ?? "—"}</span>
+                </div>
+                <div className="tp-status-item">
+                  <span className="tp-status-label">{t(locale, "auth.email")}</span>
+                  <span className="tp-status-value">{demo ? t(locale, "preview.only") : (me?.email ?? "—")}</span>
+                </div>
+                <div className="tp-status-item">
+                  <span className="tp-status-label">{t(locale, "dashboard.role")}</span>
+                  <span className="tp-status-value">
+                    {demo ? t(locale, "preview.only") : (activeMembership?.role ?? "—")}
+                  </span>
+                </div>
+                <div className="tp-status-item">
+                  <span className="tp-status-label">{t(locale, "dashboard.clients")}</span>
+                  <span className="tp-status-value tp-num">{demo ? DEMO_CLIENTS.length : clients.length}</span>
+                </div>
+              </div>
+              {!demo ? (
+                <div className="tp-inline-actions">
+                  <Button type="button" variant="secondary" onClick={signOut}>
+                    <Icon name="logout" size={15} />
+                    {t(locale, "dashboard.signout")}
+                  </Button>
+                </div>
+              ) : null}
+            </aside>
           </div>
 
-          <h2>{t(locale, "dashboard.reviewsTitle")}</h2>
-          {demo ? (
-            <div className="tp-table-wrap">
-              <table className="tp-table">
-                <thead>
-                  <tr>
-                    <th>{t(locale, "clients.name")}</th>
-                    <th>{t(locale, "review.periodStart")} – {t(locale, "review.periodEnd")}</th>
-                    <th>{t(locale, "clients.status")}</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {DEMO_REVIEWS.map((r) => (
-                    <tr key={r.id}>
-                      <td>{locale === "ar" ? r.clientNameAr : r.clientName}</td>
-                      <td className="tp-num">{r.period}</td>
-                      <td>
-                        <StatusPill label={locale === "ar" ? r.typeAr : r.type} />{" "}
-                        {t(locale, `review.status.${r.status}`)}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+          <section className="tp-panel">
+            <div className="tp-panel-head">
+              <div>
+                <h2>{t(locale, "dashboard.reviewsTitle")}</h2>
+                <p className="tp-muted">{t(locale, "dashboard.activityHint")}</p>
+              </div>
+              <Link href="/reviews">{t(locale, "common.viewAll")}</Link>
             </div>
-          ) : recentReviews.length === 0 ? (
-            <EmptyState title={t(locale, "dashboard.reviewsTitle")} hint={t(locale, "dashboard.noReviews")} />
-          ) : (
-            <>
-              <p className="tp-muted">{t(locale, "dashboard.recentHint")}</p>
+            {reviewRows.length === 0 ? (
+              <EmptyState
+                title={t(locale, "dashboard.reviewsTitle")}
+                hint={t(locale, "dashboard.noReviews")}
+                icon="reviews"
+              />
+            ) : (
               <div className="tp-table-wrap">
                 <table className="tp-table">
                   <thead>
                     <tr>
                       <th>{t(locale, "clients.name")}</th>
                       <th>{t(locale, "reviews.period")}</th>
+                      <th>{t(locale, "reviews.type")}</th>
                       <th>{t(locale, "clients.status")}</th>
-                      <th aria-label="actions" />
+                      {reviewRows.some((row) => row.openable) ? <th aria-label="actions" /> : null}
                     </tr>
                   </thead>
                   <tbody>
-                    {recentReviews.map((review) => (
+                    {reviewRows.map((review) => (
                       <tr key={review.id}>
                         <td>
-                          <Link href={`/clients/${review.client_id}`}>
-                            {clientNames.get(review.client_id) ?? "—"}
-                          </Link>
+                          <span className="tp-person-name">{review.clientName}</span>
                         </td>
                         <td className="tp-num" dir="ltr">
-                          {review.period_start} – {review.period_end}
+                          {review.period}
                         </td>
+                        <td>{review.type}</td>
                         <td>
-                          <StatusPill label={t(locale, `review.status.${review.status.toLowerCase()}`)} />
+                          <StatusPill
+                            label={statusLabel(locale, review.status)}
+                            tone={statusTone(review.status)}
+                          />
                         </td>
-                        <td>
-                          <Link href={`/reviews/${review.id}`}>{t(locale, "clients.open")}</Link>
-                        </td>
+                        {review.openable ? (
+                          <td>
+                            <Link href={`/reviews/${review.id}`} className="tp-row-link">
+                              {t(locale, "common.open")}
+                              <Icon name="arrow" size={14} />
+                            </Link>
+                          </td>
+                        ) : null}
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
-            </>
-          )}
+            )}
+          </section>
         </>
       )}
     </main>
   );
 }
-
-
